@@ -1,229 +1,227 @@
-"use strict";
+import DatasetController from '../core/core.datasetController.js';
+import {toRadians, PI, formatNumber, _parseObjectDataRadialScale} from '../helpers/index.js';
 
-module.exports = function(Chart) {
+export default class PolarAreaController extends DatasetController {
 
-	var helpers = Chart.helpers;
+  static id = 'polarArea';
 
-	Chart.defaults.polarArea = {
+  /**
+   * @type {any}
+   */
+  static defaults = {
+    dataElementType: 'arc',
+    animation: {
+      animateRotate: true,
+      animateScale: true
+    },
+    animations: {
+      numbers: {
+        type: 'number',
+        properties: ['x', 'y', 'startAngle', 'endAngle', 'innerRadius', 'outerRadius']
+      },
+    },
+    indexAxis: 'r',
+    startAngle: 0,
+  };
 
-		scale: {
-			type: "radialLinear",
-			lineArc: true // so that lines are circular
-		},
+  /**
+   * @type {any}
+   */
+  static overrides = {
+    aspectRatio: 1,
 
-		//Boolean - Whether to animate the rotation of the chart
-		animation: {
-			animateRotate: true,
-			animateScale: true
-		},
+    plugins: {
+      legend: {
+        labels: {
+          generateLabels(chart) {
+            const data = chart.data;
+            if (data.labels.length && data.datasets.length) {
+              const {labels: {pointStyle, color}} = chart.legend.options;
 
-		aspectRatio: 1,
-		legendCallback: function(chart) {
-			var text = [];
-			text.push('<ul class="' + chart.id + '-legend">');
+              return data.labels.map((label, i) => {
+                const meta = chart.getDatasetMeta(0);
+                const style = meta.controller.getStyle(i);
 
-			var data = chart.data;
-			var datasets = data.datasets;
-			var labels = data.labels;
+                return {
+                  text: label,
+                  fillStyle: style.backgroundColor,
+                  strokeStyle: style.borderColor,
+                  fontColor: color,
+                  lineWidth: style.borderWidth,
+                  pointStyle: pointStyle,
+                  hidden: !chart.getDataVisibility(i),
 
-			if (datasets.length) {
-				for (var i = 0; i < datasets[0].data.length; ++i) {
-					text.push('<li><span style="background-color:' + datasets[0].backgroundColor[i] + '">');
-					if (labels[i]) {
-						text.push(labels[i]);
-					}
-					text.push('</span></li>');
-				}
-			}
+                  // Extra data used for toggling the correct item
+                  index: i
+                };
+              });
+            }
+            return [];
+          }
+        },
 
-			text.push('</ul>');
-			return text.join("");
-		},
-		legend: {
-			labels: {
-				generateLabels: function(chart) {
-					var data = chart.data;
-					if (data.labels.length && data.datasets.length) {
-						return data.labels.map(function(label, i) {
-							var meta = chart.getDatasetMeta(0);
-							var ds = data.datasets[0];
-							var arc = meta.data[i];
-							var custom = arc.custom || {};
-							var getValueAtIndexOrDefault = helpers.getValueAtIndexOrDefault;
-							var arcOpts = chart.options.elements.arc;
-							var fill = custom.backgroundColor ? custom.backgroundColor : getValueAtIndexOrDefault(ds.backgroundColor, i, arcOpts.backgroundColor);
-							var stroke = custom.borderColor ? custom.borderColor : getValueAtIndexOrDefault(ds.borderColor, i, arcOpts.borderColor);
-							var bw = custom.borderWidth ? custom.borderWidth : getValueAtIndexOrDefault(ds.borderWidth, i, arcOpts.borderWidth);
+        onClick(e, legendItem, legend) {
+          legend.chart.toggleDataVisibility(legendItem.index);
+          legend.chart.update();
+        }
+      }
+    },
 
-							return {
-								text: label,
-								fillStyle: fill,
-								strokeStyle: stroke,
-								lineWidth: bw,
-								hidden: isNaN(ds.data[i]) || meta.data[i].hidden,
+    scales: {
+      r: {
+        type: 'radialLinear',
+        angleLines: {
+          display: false
+        },
+        beginAtZero: true,
+        grid: {
+          circular: true
+        },
+        pointLabels: {
+          display: false
+        },
+        startAngle: 0
+      }
+    }
+  };
 
-								// Extra data used for toggling the correct item
-								index: i
-							};
-						});
-					} else {
-						return [];
-					}
-				}
-			},
+  constructor(chart, datasetIndex) {
+    super(chart, datasetIndex);
 
-			onClick: function(e, legendItem) {
-				var index = legendItem.index;
-				var chart = this.chart;
-				var i, ilen, meta;
+    this.innerRadius = undefined;
+    this.outerRadius = undefined;
+  }
 
-				for (i = 0, ilen = (chart.data.datasets || []).length; i < ilen; ++i) {
-					meta = chart.getDatasetMeta(i);
-					meta.data[index].hidden = !meta.data[index].hidden;
-				}
+  getLabelAndValue(index) {
+    const meta = this._cachedMeta;
+    const chart = this.chart;
+    const labels = chart.data.labels || [];
+    const value = formatNumber(meta._parsed[index].r, chart.options.locale);
 
-				chart.update();
-			}
-		},
+    return {
+      label: labels[index] || '',
+      value,
+    };
+  }
 
-		// Need to override these to give a nice default
-		tooltips: {
-			callbacks: {
-				title: function() {
-					return '';
-				},
-				label: function(tooltipItem, data) {
-					return data.labels[tooltipItem.index] + ': ' + tooltipItem.yLabel;
-				}
-			}
-		}
-	};
+  parseObjectData(meta, data, start, count) {
+    return _parseObjectDataRadialScale.bind(this)(meta, data, start, count);
+  }
 
-	Chart.controllers.polarArea = Chart.DatasetController.extend({
+  update(mode) {
+    const arcs = this._cachedMeta.data;
 
-		dataElementType: Chart.elements.Arc,
+    this._updateRadius();
+    this.updateElements(arcs, 0, arcs.length, mode);
+  }
 
-		linkScales: helpers.noop,
+  /**
+   * @protected
+   */
+  getMinMax() {
+    const meta = this._cachedMeta;
+    const range = {min: Number.POSITIVE_INFINITY, max: Number.NEGATIVE_INFINITY};
 
-		update: function update(reset) {
-			var _this = this;
-			var chart = _this.chart;
-			var chartArea = chart.chartArea;
-			var meta = this.getMeta();
-			var opts = chart.options;
-			var arcOpts = opts.elements.arc;
-			var minSize = Math.min(chartArea.right - chartArea.left, chartArea.bottom - chartArea.top);
-			chart.outerRadius = Math.max((minSize - arcOpts.borderWidth / 2) / 2, 0);
-			chart.innerRadius = Math.max(opts.cutoutPercentage ? (chart.outerRadius / 100) * (opts.cutoutPercentage) : 1, 0);
-			chart.radiusLength = (chart.outerRadius - chart.innerRadius) / chart.getVisibleDatasetCount();
+    meta.data.forEach((element, index) => {
+      const parsed = this.getParsed(index).r;
 
-			_this.outerRadius = chart.outerRadius - (chart.radiusLength * _this.index);
-			_this.innerRadius = _this.outerRadius - chart.radiusLength;
+      if (!isNaN(parsed) && this.chart.getDataVisibility(index)) {
+        if (parsed < range.min) {
+          range.min = parsed;
+        }
 
-			meta.count = _this.countVisibleElements();
+        if (parsed > range.max) {
+          range.max = parsed;
+        }
+      }
+    });
 
-			helpers.each(meta.data, function(arc, index) {
-				_this.updateElement(arc, index, reset);
-			});
-		},
+    return range;
+  }
 
-		updateElement: function(arc, index, reset) {
-			var _this = this;
-			var chart = _this.chart;
-			var chartArea = chart.chartArea;
-			var dataset = _this.getDataset();
-			var opts = chart.options;
-			var animationOpts = opts.animation;
-			var arcOpts = opts.elements.arc;
-			var custom = arc.custom || {};
-			var scale = chart.scale;
-			var getValueAtIndexOrDefault = helpers.getValueAtIndexOrDefault;
-			var labels = chart.data.labels;
+  /**
+	 * @private
+	 */
+  _updateRadius() {
+    const chart = this.chart;
+    const chartArea = chart.chartArea;
+    const opts = chart.options;
+    const minSize = Math.min(chartArea.right - chartArea.left, chartArea.bottom - chartArea.top);
 
-			var circumference = _this.calculateCircumference(dataset.data[index]);
-			var centerX = (chartArea.left + chartArea.right) / 2;
-			var centerY = (chartArea.top + chartArea.bottom) / 2;
+    const outerRadius = Math.max(minSize / 2, 0);
+    const innerRadius = Math.max(opts.cutoutPercentage ? (outerRadius / 100) * (opts.cutoutPercentage) : 1, 0);
+    const radiusLength = (outerRadius - innerRadius) / chart.getVisibleDatasetCount();
 
-			// If there is NaN data before us, we need to calculate the starting angle correctly.
-			// We could be way more efficient here, but its unlikely that the polar area chart will have a lot of data
-			var visibleCount = 0;
-			var meta = _this.getMeta();
-			for (var i = 0; i < index; ++i) {
-				if (!isNaN(dataset.data[i]) && !meta.data[i].hidden) {
-					++visibleCount;
-				}
-			}
+    this.outerRadius = outerRadius - (radiusLength * this.index);
+    this.innerRadius = this.outerRadius - radiusLength;
+  }
 
-			var distance = arc.hidden? 0 : scale.getDistanceFromCenterForValue(dataset.data[index]);
-			var startAngle = (-0.5 * Math.PI) + (circumference * visibleCount);
-			var endAngle = startAngle + (arc.hidden? 0 : circumference);
+  updateElements(arcs, start, count, mode) {
+    const reset = mode === 'reset';
+    const chart = this.chart;
+    const opts = chart.options;
+    const animationOpts = opts.animation;
+    const scale = this._cachedMeta.rScale;
+    const centerX = scale.xCenter;
+    const centerY = scale.yCenter;
+    const datasetStartAngle = scale.getIndexAngle(0) - 0.5 * PI;
+    let angle = datasetStartAngle;
+    let i;
 
-			var resetModel = {
-				x: centerX,
-				y: centerY,
-				innerRadius: 0,
-				outerRadius: animationOpts.animateScale ? 0 : scale.getDistanceFromCenterForValue(dataset.data[index]),
-				startAngle: animationOpts.animateRotate ? Math.PI * -0.5 : startAngle,
-				endAngle: animationOpts.animateRotate ? Math.PI * -0.5 : endAngle,
+    const defaultAngle = 360 / this.countVisibleElements();
 
-				backgroundColor: custom.backgroundColor ? custom.backgroundColor : getValueAtIndexOrDefault(dataset.backgroundColor, index, arcOpts.backgroundColor),
-				borderWidth: custom.borderWidth ? custom.borderWidth : getValueAtIndexOrDefault(dataset.borderWidth, index, arcOpts.borderWidth),
-				borderColor: custom.borderColor ? custom.borderColor : getValueAtIndexOrDefault(dataset.borderColor, index, arcOpts.borderColor),
+    for (i = 0; i < start; ++i) {
+      angle += this._computeAngle(i, mode, defaultAngle);
+    }
+    for (i = start; i < start + count; i++) {
+      const arc = arcs[i];
+      let startAngle = angle;
+      let endAngle = angle + this._computeAngle(i, mode, defaultAngle);
+      let outerRadius = chart.getDataVisibility(i) ? scale.getDistanceFromCenterForValue(this.getParsed(i).r) : 0;
+      angle = endAngle;
 
-				label: getValueAtIndexOrDefault(labels, index, labels[index])
-			};
+      if (reset) {
+        if (animationOpts.animateScale) {
+          outerRadius = 0;
+        }
+        if (animationOpts.animateRotate) {
+          startAngle = endAngle = datasetStartAngle;
+        }
+      }
 
-			helpers.extend(arc, {
-				// Utility
-				_datasetIndex: _this.index,
-				_index: index,
-				_scale: scale,
+      const properties = {
+        x: centerX,
+        y: centerY,
+        innerRadius: 0,
+        outerRadius,
+        startAngle,
+        endAngle,
+        options: this.resolveDataElementOptions(i, arc.active ? 'active' : mode)
+      };
 
-				// Desired view properties
-				_model: reset ? resetModel : {
-					x: centerX,
-					y: centerY,
-					innerRadius: 0,
-					outerRadius: distance,
-					startAngle: startAngle,
-					endAngle: endAngle,
+      this.updateElement(arc, i, properties, mode);
+    }
+  }
 
-					backgroundColor: custom.backgroundColor ? custom.backgroundColor : getValueAtIndexOrDefault(dataset.backgroundColor, index, arcOpts.backgroundColor),
-					borderWidth: custom.borderWidth ? custom.borderWidth : getValueAtIndexOrDefault(dataset.borderWidth, index, arcOpts.borderWidth),
-					borderColor: custom.borderColor ? custom.borderColor : getValueAtIndexOrDefault(dataset.borderColor, index, arcOpts.borderColor),
+  countVisibleElements() {
+    const meta = this._cachedMeta;
+    let count = 0;
 
-					label: getValueAtIndexOrDefault(labels, index, labels[index])
-				}
-			});
+    meta.data.forEach((element, index) => {
+      if (!isNaN(this.getParsed(index).r) && this.chart.getDataVisibility(index)) {
+        count++;
+      }
+    });
 
-			arc.pivot();
-		},
+    return count;
+  }
 
-		removeHoverStyle: function(arc) {
-			Chart.DatasetController.prototype.removeHoverStyle.call(this, arc, this.chart.options.elements.arc);
-		},
-
-		countVisibleElements: function() {
-			var dataset = this.getDataset();
-			var meta = this.getMeta();
-			var count = 0;
-
-			helpers.each(meta.data, function(element, index) {
-				if (!isNaN(dataset.data[index]) && !element.hidden) {
-					count++;
-				}
-			});
-
-			return count;
-		},
-
-		calculateCircumference: function(value) {
-			var count = this.getMeta().count;
-			if (count > 0 && !isNaN(value)) {
-				return (2 * Math.PI) / count;
-			} else {
-				return 0;
-			}
-		}
-	});
-};
+  /**
+	 * @private
+	 */
+  _computeAngle(index, mode, defaultAngle) {
+    return this.chart.getDataVisibility(index)
+      ? toRadians(this.resolveDataElementOptions(index, mode).angle || defaultAngle)
+      : 0;
+  }
+}

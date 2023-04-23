@@ -1,569 +1,656 @@
-"use strict";
-
-module.exports = function(Chart) {
-
-	var helpers = Chart.helpers;
-
-	Chart.defaults.bar = {
-		hover: {
-			mode: "label"
-		},
-
-		scales: {
-			xAxes: [{
-				type: "category",
-
-				// Specific to Bar Controller
-				categoryPercentage: 0.8,
-				barPercentage: 0.9,
-
-				// grid line settings
-				gridLines: {
-					offsetGridLines: true
-				}
-			}],
-			yAxes: [{
-				type: "linear"
-			}]
-		}
-	};
-
-	Chart.controllers.bar = Chart.DatasetController.extend({
-
-		dataElementType: Chart.elements.Rectangle,
-
-		initialize: function(chart, datasetIndex) {
-			Chart.DatasetController.prototype.initialize.call(this, chart, datasetIndex);
-
-			// Use this to indicate that this is a bar dataset.
-			this.getMeta().bar = true;
-		},
-
-		// Get the number of datasets that display bars. We use this to correctly calculate the bar width
-		getBarCount: function getBarCount() {
-			var barCount = 0;
-			helpers.each(this.chart.data.datasets, function(dataset, datasetIndex) {
-				var meta = this.chart.getDatasetMeta(datasetIndex);
-				if (meta.bar && this.chart.isDatasetVisible(datasetIndex)) {
-					++barCount;
-				}
-			}, this);
-			return barCount;
-		},
-
-		update: function update(reset) {
-			helpers.each(this.getMeta().data, function(rectangle, index) {
-				this.updateElement(rectangle, index, reset);
-			}, this);
-		},
-
-		updateElement: function updateElement(rectangle, index, reset) {
-			var meta = this.getMeta();
-			var xScale = this.getScaleForId(meta.xAxisID);
-			var yScale = this.getScaleForId(meta.yAxisID);
-			var scaleBase = yScale.getBasePixel();
-			var rectangleElementOptions = this.chart.options.elements.rectangle;
-			var custom = rectangle.custom || {};
-			var dataset = this.getDataset();
-
-			helpers.extend(rectangle, {
-				// Utility
-				_xScale: xScale,
-				_yScale: yScale,
-				_datasetIndex: this.index,
-				_index: index,
-
-				// Desired view properties
-				_model: {
-					x: this.calculateBarX(index, this.index),
-					y: reset ? scaleBase : this.calculateBarY(index, this.index),
-
-					// Tooltip
-					label: this.chart.data.labels[index],
-					datasetLabel: dataset.label,
-
-					// Appearance
-					base: reset ? scaleBase : this.calculateBarBase(this.index, index),
-					width: this.calculateBarWidth(index),
-					backgroundColor: custom.backgroundColor ? custom.backgroundColor : helpers.getValueAtIndexOrDefault(dataset.backgroundColor, index, rectangleElementOptions.backgroundColor),
-					borderSkipped: custom.borderSkipped ? custom.borderSkipped : rectangleElementOptions.borderSkipped,
-					borderColor: custom.borderColor ? custom.borderColor : helpers.getValueAtIndexOrDefault(dataset.borderColor, index, rectangleElementOptions.borderColor),
-					borderWidth: custom.borderWidth ? custom.borderWidth : helpers.getValueAtIndexOrDefault(dataset.borderWidth, index, rectangleElementOptions.borderWidth)
-				}
-			});
-			rectangle.pivot();
-		},
-
-		calculateBarBase: function(datasetIndex, index) {
-			var meta = this.getMeta();
-			var yScale = this.getScaleForId(meta.yAxisID);
-			var base = 0;
-
-			if (yScale.options.stacked) {
-				var chart = this.chart;
-				var datasets = chart.data.datasets;
-				var value = datasets[datasetIndex].data[index];
-
-				if (value < 0) {
-					for (var i = 0; i < datasetIndex; i++) {
-						var negDS = datasets[i];
-						var negDSMeta = chart.getDatasetMeta(i);
-						if (negDSMeta.bar && negDSMeta.yAxisID === yScale.id && chart.isDatasetVisible(i)) {
-							base += negDS.data[index] < 0 ? negDS.data[index] : 0;
-						}
-					}
-				} else {
-					for (var j = 0; j < datasetIndex; j++) {
-						var posDS = datasets[j];
-						var posDSMeta = chart.getDatasetMeta(j);
-						if (posDSMeta.bar && posDSMeta.yAxisID === yScale.id && chart.isDatasetVisible(j)) {
-							base += posDS.data[index] > 0 ? posDS.data[index] : 0;
-						}
-					}
-				}
-
-				return yScale.getPixelForValue(base);
-			}
-
-			return yScale.getBasePixel();
-		},
-
-		getRuler: function(index) {
-			var meta = this.getMeta();
-			var xScale = this.getScaleForId(meta.xAxisID);
-			var datasetCount = this.getBarCount();
-
-			var tickWidth;
-
-			if (xScale.options.type === 'category') {
-				tickWidth = xScale.getPixelForTick(index + 1) - xScale.getPixelForTick(index);
-			} else {
-				// Average width
-				tickWidth = xScale.width / xScale.ticks.length;
-			}
-			var categoryWidth = tickWidth * xScale.options.categoryPercentage;
-			var categorySpacing = (tickWidth - (tickWidth * xScale.options.categoryPercentage)) / 2;
-			var fullBarWidth = categoryWidth / datasetCount;
-
-			if (xScale.ticks.length !== this.chart.data.labels.length) {
-			    var perc = xScale.ticks.length / this.chart.data.labels.length;
-			    fullBarWidth = fullBarWidth * perc;
-			}
-
-			var barWidth = fullBarWidth * xScale.options.barPercentage;
-			var barSpacing = fullBarWidth - (fullBarWidth * xScale.options.barPercentage);
-
-			return {
-				datasetCount: datasetCount,
-				tickWidth: tickWidth,
-				categoryWidth: categoryWidth,
-				categorySpacing: categorySpacing,
-				fullBarWidth: fullBarWidth,
-				barWidth: barWidth,
-				barSpacing: barSpacing
-			};
-		},
-
-		calculateBarWidth: function(index) {
-			var xScale = this.getScaleForId(this.getMeta().xAxisID);
-			var ruler = this.getRuler(index);
-			return xScale.options.stacked ? ruler.categoryWidth : ruler.barWidth;
-		},
-
-		// Get bar index from the given dataset index accounting for the fact that not all bars are visible
-		getBarIndex: function(datasetIndex) {
-			var barIndex = 0;
-			var meta, j;
-
-			for (j = 0; j < datasetIndex; ++j) {
-				meta = this.chart.getDatasetMeta(j);
-				if (meta.bar && this.chart.isDatasetVisible(j)) {
-					++barIndex;
-				}
-			}
-
-			return barIndex;
-		},
-
-		calculateBarX: function(index, datasetIndex) {
-			var meta = this.getMeta();
-			var xScale = this.getScaleForId(meta.xAxisID);
-			var barIndex = this.getBarIndex(datasetIndex);
-
-			var ruler = this.getRuler(index);
-			var leftTick = xScale.getPixelForValue(null, index, datasetIndex, this.chart.isCombo);
-			leftTick -= this.chart.isCombo ? (ruler.tickWidth / 2) : 0;
-
-			if (xScale.options.stacked) {
-				return leftTick + (ruler.categoryWidth / 2) + ruler.categorySpacing;
-			}
-
-			return leftTick +
-				(ruler.barWidth / 2) +
-				ruler.categorySpacing +
-				(ruler.barWidth * barIndex) +
-				(ruler.barSpacing / 2) +
-				(ruler.barSpacing * barIndex);
-		},
-
-		calculateBarY: function(index, datasetIndex) {
-			var meta = this.getMeta();
-			var yScale = this.getScaleForId(meta.yAxisID);
-			var value = this.getDataset().data[index];
-
-			if (yScale.options.stacked) {
-
-				var sumPos = 0,
-					sumNeg = 0;
-
-				for (var i = 0; i < datasetIndex; i++) {
-					var ds = this.chart.data.datasets[i];
-					var dsMeta = this.chart.getDatasetMeta(i);
-					if (dsMeta.bar && dsMeta.yAxisID === yScale.id && this.chart.isDatasetVisible(i)) {
-						if (ds.data[index] < 0) {
-							sumNeg += ds.data[index] || 0;
-						} else {
-							sumPos += ds.data[index] || 0;
-						}
-					}
-				}
-
-				if (value < 0) {
-					return yScale.getPixelForValue(sumNeg + value);
-				} else {
-					return yScale.getPixelForValue(sumPos + value);
-				}
-			}
-
-			return yScale.getPixelForValue(value);
-		},
-
-		draw: function(ease) {
-			var easingDecimal = ease || 1;
-			helpers.each(this.getMeta().data, function(rectangle, index) {
-				var d = this.getDataset().data[index];
-				if (d !== null && d !== undefined && !isNaN(d)) {
-					rectangle.transition(easingDecimal).draw();
-				}
-			}, this);
-		},
-
-		setHoverStyle: function(rectangle) {
-			var dataset = this.chart.data.datasets[rectangle._datasetIndex];
-			var index = rectangle._index;
-
-			var custom = rectangle.custom || {};
-			var model = rectangle._model;
-			model.backgroundColor = custom.hoverBackgroundColor ? custom.hoverBackgroundColor : helpers.getValueAtIndexOrDefault(dataset.hoverBackgroundColor, index, helpers.getHoverColor(model.backgroundColor));
-			model.borderColor = custom.hoverBorderColor ? custom.hoverBorderColor : helpers.getValueAtIndexOrDefault(dataset.hoverBorderColor, index, helpers.getHoverColor(model.borderColor));
-			model.borderWidth = custom.hoverBorderWidth ? custom.hoverBorderWidth : helpers.getValueAtIndexOrDefault(dataset.hoverBorderWidth, index, model.borderWidth);
-		},
-
-		removeHoverStyle: function(rectangle) {
-			var dataset = this.chart.data.datasets[rectangle._datasetIndex];
-			var index = rectangle._index;
-			var custom = rectangle.custom || {};
-			var model = rectangle._model;
-			var rectangleElementOptions = this.chart.options.elements.rectangle;
-
-			model.backgroundColor = custom.backgroundColor ? custom.backgroundColor : helpers.getValueAtIndexOrDefault(dataset.backgroundColor, index, rectangleElementOptions.backgroundColor);
-			model.borderColor = custom.borderColor ? custom.borderColor : helpers.getValueAtIndexOrDefault(dataset.borderColor, index, rectangleElementOptions.borderColor);
-			model.borderWidth = custom.borderWidth ? custom.borderWidth : helpers.getValueAtIndexOrDefault(dataset.borderWidth, index, rectangleElementOptions.borderWidth);
-		}
-
-	});
-
-
-	// including horizontalBar in the bar file, instead of a file of its own
-	// it extends bar (like pie extends doughnut)
-	Chart.defaults.horizontalBar = {
-		hover: {
-			mode: "label"
-		},
-
-		scales: {
-			xAxes: [{
-				type: "linear",
-				position: "bottom"
-			}],
-			yAxes: [{
-				position: "left",
-				type: "category",
-
-				// Specific to Horizontal Bar Controller
-				categoryPercentage: 0.8,
-				barPercentage: 0.9,
-
-				// grid line settings
-				gridLines: {
-					offsetGridLines: true
-				}
-			}]
-		},
-		elements: {
-			rectangle: {
-				borderSkipped: 'left'
-			}
-		},
-		tooltips: {
-			callbacks: {
-				title: function(tooltipItems, data) {
-					// Pick first xLabel for now
-					var title = '';
-
-					if (tooltipItems.length > 0) {
-						if (tooltipItems[0].yLabel) {
-							title = tooltipItems[0].yLabel;
-						} else if (data.labels.length > 0 && tooltipItems[0].index < data.labels.length) {
-							title = data.labels[tooltipItems[0].index];
-						}
-					}
-
-					return title;
-				},
-				label: function(tooltipItem, data) {
-					var datasetLabel = data.datasets[tooltipItem.datasetIndex].label || '';
-				return datasetLabel + ': ' + tooltipItem.xLabel;
-				}
-			}
-		}
-	};
-
-	Chart.controllers.horizontalBar = Chart.controllers.bar.extend({
-		updateElement: function updateElement(rectangle, index, reset, numBars) {
-			var meta = this.getMeta();
-			var xScale = this.getScaleForId(meta.xAxisID);
-			var yScale = this.getScaleForId(meta.yAxisID);
-			var scaleBase = xScale.getBasePixel();
-			var custom = rectangle.custom || {};
-			var dataset = this.getDataset();
-			var rectangleElementOptions = this.chart.options.elements.rectangle;
-
-			helpers.extend(rectangle, {
-				// Utility
-				_xScale: xScale,
-				_yScale: yScale,
-				_datasetIndex: this.index,
-				_index: index,
-
-				// Desired view properties
-				_model: {
-					x: reset ? scaleBase : this.calculateBarX(index, this.index),
-					y: this.calculateBarY(index, this.index),
-
-					// Tooltip
-					label: this.chart.data.labels[index],
-					datasetLabel: dataset.label,
-
-					// Appearance
-					base: reset ? scaleBase : this.calculateBarBase(this.index, index),
-					height: this.calculateBarHeight(index),
-					backgroundColor: custom.backgroundColor ? custom.backgroundColor : helpers.getValueAtIndexOrDefault(dataset.backgroundColor, index, rectangleElementOptions.backgroundColor),
-					borderSkipped: custom.borderSkipped ? custom.borderSkipped : rectangleElementOptions.borderSkipped,
-					borderColor: custom.borderColor ? custom.borderColor : helpers.getValueAtIndexOrDefault(dataset.borderColor, index, rectangleElementOptions.borderColor),
-					borderWidth: custom.borderWidth ? custom.borderWidth : helpers.getValueAtIndexOrDefault(dataset.borderWidth, index, rectangleElementOptions.borderWidth)
-				},
-
-				draw: function () {
-
-					var ctx = this._chart.ctx;
-					var vm = this._view;
-
-					var halfHeight = vm.height / 2,
-						topY = vm.y - halfHeight,
-						bottomY = vm.y + halfHeight,
-						right = vm.base - (vm.base - vm.x),
-						halfStroke = vm.borderWidth / 2;
-
-					// Canvas doesn't allow us to stroke inside the width so we can
-					// adjust the sizes to fit if we're setting a stroke on the line
-					if (vm.borderWidth) {
-						topY += halfStroke;
-						bottomY -= halfStroke;
-						right += halfStroke;
-					}
-
-					ctx.beginPath();
-
-					ctx.fillStyle = vm.backgroundColor;
-					ctx.strokeStyle = vm.borderColor;
-					ctx.lineWidth = vm.borderWidth;
-
-					// Corner points, from bottom-left to bottom-right clockwise
-					// | 1 2 |
-					// | 0 3 |
-					var corners = [
-						[vm.base, bottomY],
-						[vm.base, topY],
-						[right, topY],
-						[right, bottomY]
-					];
-
-					// Find first (starting) corner with fallback to 'bottom'
-					var borders = ['bottom', 'left', 'top', 'right'];
-					var startCorner = borders.indexOf(vm.borderSkipped, 0);
-					if (startCorner === -1)
-						startCorner = 0;
-
-					function cornerAt(index) {
-						return corners[(startCorner + index) % 4];
-					}
-
-					// Draw rectangle from 'startCorner'
-					ctx.moveTo.apply(ctx, cornerAt(0));
-					for (var i = 1; i < 4; i++)
-						ctx.lineTo.apply(ctx, cornerAt(i));
-
-					ctx.fill();
-					if (vm.borderWidth) {
-						ctx.stroke();
-					}
-				},
-
-				inRange: function (mouseX, mouseY) {
-					var vm = this._view;
-					var inRange = false;
-
-					if (vm) {
-						if (vm.x < vm.base) {
-							inRange = (mouseY >= vm.y - vm.height / 2 && mouseY <= vm.y + vm.height / 2) && (mouseX >= vm.x && mouseX <= vm.base);
-						} else {
-							inRange = (mouseY >= vm.y - vm.height / 2 && mouseY <= vm.y + vm.height / 2) && (mouseX >= vm.base && mouseX <= vm.x);
-						}
-					}
-
-					return inRange;
-				}
-			});
-
-			rectangle.pivot();
-		},
-
-		calculateBarBase: function (datasetIndex, index) {
-			var meta = this.getMeta();
-			var xScale = this.getScaleForId(meta.xAxisID);
-			var base = 0;
-
-			if (xScale.options.stacked) {
-
-				var value = this.chart.data.datasets[datasetIndex].data[index];
-
-				if (value < 0) {
-					for (var i = 0; i < datasetIndex; i++) {
-						var negDS = this.chart.data.datasets[i];
-						var negDSMeta = this.chart.getDatasetMeta(i);
-						if (negDSMeta.bar && negDSMeta.xAxisID === xScale.id && this.chart.isDatasetVisible(i)) {
-							base += negDS.data[index] < 0 ? negDS.data[index] : 0;
-						}
-					}
-				} else {
-					for (var j = 0; j < datasetIndex; j++) {
-						var posDS = this.chart.data.datasets[j];
-						var posDSMeta = this.chart.getDatasetMeta(j);
-						if (posDSMeta.bar && posDSMeta.xAxisID === xScale.id && this.chart.isDatasetVisible(j)) {
-							base += posDS.data[index] > 0 ? posDS.data[index] : 0;
-						}
-					}
-				}
-
-				return xScale.getPixelForValue(base);
-			}
-
-			return xScale.getBasePixel();
-		},
-
-		getRuler: function (index) {
-			var meta = this.getMeta();
-			var yScale = this.getScaleForId(meta.yAxisID);
-			var datasetCount = this.getBarCount();
-
-			var tickHeight;
-			if (yScale.options.type === 'category') {
-				tickHeight = yScale.getPixelForTick(index + 1) - yScale.getPixelForTick(index);
-			} else {
-				// Average width
-				tickHeight = yScale.width / yScale.ticks.length;
-			}
-			var categoryHeight = tickHeight * yScale.options.categoryPercentage;
-			var categorySpacing = (tickHeight - (tickHeight * yScale.options.categoryPercentage)) / 2;
-			var fullBarHeight = categoryHeight / datasetCount;
-
-			if (yScale.ticks.length !== this.chart.data.labels.length) {
-				var perc = yScale.ticks.length / this.chart.data.labels.length;
-				fullBarHeight = fullBarHeight * perc;
-			}
-
-			var barHeight = fullBarHeight * yScale.options.barPercentage;
-			var barSpacing = fullBarHeight - (fullBarHeight * yScale.options.barPercentage);
-
-			return {
-				datasetCount: datasetCount,
-				tickHeight: tickHeight,
-				categoryHeight: categoryHeight,
-				categorySpacing: categorySpacing,
-				fullBarHeight: fullBarHeight,
-				barHeight: barHeight,
-				barSpacing: barSpacing,
-			};
-		},
-
-		calculateBarHeight: function (index) {
-			var yScale = this.getScaleForId(this.getMeta().yAxisID);
-			var ruler = this.getRuler(index);
-			return yScale.options.stacked ? ruler.categoryHeight : ruler.barHeight;
-		},
-
-		calculateBarX: function (index, datasetIndex) {
-			var meta = this.getMeta();
-			var xScale = this.getScaleForId(meta.xAxisID);
-			var value = this.getDataset().data[index];
-
-			if (xScale.options.stacked) {
-
-				var sumPos = 0,
-					sumNeg = 0;
-
-				for (var i = 0; i < datasetIndex; i++) {
-					var ds = this.chart.data.datasets[i];
-					var dsMeta = this.chart.getDatasetMeta(i);
-					if (dsMeta.bar && dsMeta.xAxisID === xScale.id && this.chart.isDatasetVisible(i)) {
-						if (ds.data[index] < 0) {
-							sumNeg += ds.data[index] || 0;
-						} else {
-							sumPos += ds.data[index] || 0;
-						}
-					}
-				}
-
-				if (value < 0) {
-					return xScale.getPixelForValue(sumNeg + value);
-				} else {
-					return xScale.getPixelForValue(sumPos + value);
-				}
-			}
-
-			return xScale.getPixelForValue(value);
-		},
-
-		calculateBarY: function (index, datasetIndex) {
-			var meta = this.getMeta();
-			var yScale = this.getScaleForId(meta.yAxisID);
-			var barIndex = this.getBarIndex(datasetIndex);
-
-			var ruler = this.getRuler(index);
-			var topTick = yScale.getPixelForValue(null, index, datasetIndex, this.chart.isCombo);
-			topTick -= this.chart.isCombo ? (ruler.tickHeight / 2) : 0;
-
-			if (yScale.options.stacked) {
-				return topTick + (ruler.categoryHeight / 2) + ruler.categorySpacing;
-			}
-
-			return topTick +
-				(ruler.barHeight / 2) +
-				ruler.categorySpacing +
-				(ruler.barHeight * barIndex) +
-				(ruler.barSpacing / 2) +
-				(ruler.barSpacing * barIndex);
-		}
-	});
-};
+import DatasetController from '../core/core.datasetController.js';
+import {
+  _arrayUnique, isArray, isNullOrUndef,
+  valueOrDefault, resolveObjectKey, sign, defined
+} from '../helpers/index.js';
+
+function getAllScaleValues(scale, type) {
+  if (!scale._cache.$bar) {
+    const visibleMetas = scale.getMatchingVisibleMetas(type);
+    let values = [];
+
+    for (let i = 0, ilen = visibleMetas.length; i < ilen; i++) {
+      values = values.concat(visibleMetas[i].controller.getAllParsedValues(scale));
+    }
+    scale._cache.$bar = _arrayUnique(values.sort((a, b) => a - b));
+  }
+  return scale._cache.$bar;
+}
+
+/**
+ * Computes the "optimal" sample size to maintain bars equally sized while preventing overlap.
+ * @private
+ */
+function computeMinSampleSize(meta) {
+  const scale = meta.iScale;
+  const values = getAllScaleValues(scale, meta.type);
+  let min = scale._length;
+  let i, ilen, curr, prev;
+  const updateMinAndPrev = () => {
+    if (curr === 32767 || curr === -32768) {
+      // Ignore truncated pixels
+      return;
+    }
+    if (defined(prev)) {
+      // curr - prev === 0 is ignored
+      min = Math.min(min, Math.abs(curr - prev) || min);
+    }
+    prev = curr;
+  };
+
+  for (i = 0, ilen = values.length; i < ilen; ++i) {
+    curr = scale.getPixelForValue(values[i]);
+    updateMinAndPrev();
+  }
+
+  prev = undefined;
+  for (i = 0, ilen = scale.ticks.length; i < ilen; ++i) {
+    curr = scale.getPixelForTick(i);
+    updateMinAndPrev();
+  }
+
+  return min;
+}
+
+/**
+ * Computes an "ideal" category based on the absolute bar thickness or, if undefined or null,
+ * uses the smallest interval (see computeMinSampleSize) that prevents bar overlapping. This
+ * mode currently always generates bars equally sized (until we introduce scriptable options?).
+ * @private
+ */
+function computeFitCategoryTraits(index, ruler, options, stackCount) {
+  const thickness = options.barThickness;
+  let size, ratio;
+
+  if (isNullOrUndef(thickness)) {
+    size = ruler.min * options.categoryPercentage;
+    ratio = options.barPercentage;
+  } else {
+    // When bar thickness is enforced, category and bar percentages are ignored.
+    // Note(SB): we could add support for relative bar thickness (e.g. barThickness: '50%')
+    // and deprecate barPercentage since this value is ignored when thickness is absolute.
+    size = thickness * stackCount;
+    ratio = 1;
+  }
+
+  return {
+    chunk: size / stackCount,
+    ratio,
+    start: ruler.pixels[index] - (size / 2)
+  };
+}
+
+/**
+ * Computes an "optimal" category that globally arranges bars side by side (no gap when
+ * percentage options are 1), based on the previous and following categories. This mode
+ * generates bars with different widths when data are not evenly spaced.
+ * @private
+ */
+function computeFlexCategoryTraits(index, ruler, options, stackCount) {
+  const pixels = ruler.pixels;
+  const curr = pixels[index];
+  let prev = index > 0 ? pixels[index - 1] : null;
+  let next = index < pixels.length - 1 ? pixels[index + 1] : null;
+  const percent = options.categoryPercentage;
+
+  if (prev === null) {
+    // first data: its size is double based on the next point or,
+    // if it's also the last data, we use the scale size.
+    prev = curr - (next === null ? ruler.end - ruler.start : next - curr);
+  }
+
+  if (next === null) {
+    // last data: its size is also double based on the previous point.
+    next = curr + curr - prev;
+  }
+
+  const start = curr - (curr - Math.min(prev, next)) / 2 * percent;
+  const size = Math.abs(next - prev) / 2 * percent;
+
+  return {
+    chunk: size / stackCount,
+    ratio: options.barPercentage,
+    start
+  };
+}
+
+function parseFloatBar(entry, item, vScale, i) {
+  const startValue = vScale.parse(entry[0], i);
+  const endValue = vScale.parse(entry[1], i);
+  const min = Math.min(startValue, endValue);
+  const max = Math.max(startValue, endValue);
+  let barStart = min;
+  let barEnd = max;
+
+  if (Math.abs(min) > Math.abs(max)) {
+    barStart = max;
+    barEnd = min;
+  }
+
+  // Store `barEnd` (furthest away from origin) as parsed value,
+  // to make stacking straight forward
+  item[vScale.axis] = barEnd;
+
+  item._custom = {
+    barStart,
+    barEnd,
+    start: startValue,
+    end: endValue,
+    min,
+    max
+  };
+}
+
+function parseValue(entry, item, vScale, i) {
+  if (isArray(entry)) {
+    parseFloatBar(entry, item, vScale, i);
+  } else {
+    item[vScale.axis] = vScale.parse(entry, i);
+  }
+  return item;
+}
+
+function parseArrayOrPrimitive(meta, data, start, count) {
+  const iScale = meta.iScale;
+  const vScale = meta.vScale;
+  const labels = iScale.getLabels();
+  const singleScale = iScale === vScale;
+  const parsed = [];
+  let i, ilen, item, entry;
+
+  for (i = start, ilen = start + count; i < ilen; ++i) {
+    entry = data[i];
+    item = {};
+    item[iScale.axis] = singleScale || iScale.parse(labels[i], i);
+    parsed.push(parseValue(entry, item, vScale, i));
+  }
+  return parsed;
+}
+
+function isFloatBar(custom) {
+  return custom && custom.barStart !== undefined && custom.barEnd !== undefined;
+}
+
+function barSign(size, vScale, actualBase) {
+  if (size !== 0) {
+    return sign(size);
+  }
+  return (vScale.isHorizontal() ? 1 : -1) * (vScale.min >= actualBase ? 1 : -1);
+}
+
+function borderProps(properties) {
+  let reverse, start, end, top, bottom;
+  if (properties.horizontal) {
+    reverse = properties.base > properties.x;
+    start = 'left';
+    end = 'right';
+  } else {
+    reverse = properties.base < properties.y;
+    start = 'bottom';
+    end = 'top';
+  }
+  if (reverse) {
+    top = 'end';
+    bottom = 'start';
+  } else {
+    top = 'start';
+    bottom = 'end';
+  }
+  return {start, end, reverse, top, bottom};
+}
+
+function setBorderSkipped(properties, options, stack, index) {
+  let edge = options.borderSkipped;
+  const res = {};
+
+  if (!edge) {
+    properties.borderSkipped = res;
+    return;
+  }
+
+  if (edge === true) {
+    properties.borderSkipped = {top: true, right: true, bottom: true, left: true};
+    return;
+  }
+
+  const {start, end, reverse, top, bottom} = borderProps(properties);
+
+  if (edge === 'middle' && stack) {
+    properties.enableBorderRadius = true;
+    if ((stack._top || 0) === index) {
+      edge = top;
+    } else if ((stack._bottom || 0) === index) {
+      edge = bottom;
+    } else {
+      res[parseEdge(bottom, start, end, reverse)] = true;
+      edge = top;
+    }
+  }
+
+  res[parseEdge(edge, start, end, reverse)] = true;
+  properties.borderSkipped = res;
+}
+
+function parseEdge(edge, a, b, reverse) {
+  if (reverse) {
+    edge = swap(edge, a, b);
+    edge = startEnd(edge, b, a);
+  } else {
+    edge = startEnd(edge, a, b);
+  }
+  return edge;
+}
+
+function swap(orig, v1, v2) {
+  return orig === v1 ? v2 : orig === v2 ? v1 : orig;
+}
+
+function startEnd(v, start, end) {
+  return v === 'start' ? start : v === 'end' ? end : v;
+}
+
+function setInflateAmount(properties, {inflateAmount}, ratio) {
+  properties.inflateAmount = inflateAmount === 'auto'
+    ? ratio === 1 ? 0.33 : 0
+    : inflateAmount;
+}
+
+export default class BarController extends DatasetController {
+
+  static id = 'bar';
+
+  /**
+   * @type {any}
+   */
+  static defaults = {
+    datasetElementType: false,
+    dataElementType: 'bar',
+
+    categoryPercentage: 0.8,
+    barPercentage: 0.9,
+    grouped: true,
+
+    animations: {
+      numbers: {
+        type: 'number',
+        properties: ['x', 'y', 'base', 'width', 'height']
+      }
+    }
+  };
+
+  /**
+   * @type {any}
+   */
+  static overrides = {
+    scales: {
+      _index_: {
+        type: 'category',
+        offset: true,
+        grid: {
+          offset: true
+        }
+      },
+      _value_: {
+        type: 'linear',
+        beginAtZero: true,
+      }
+    }
+  };
+
+
+  /**
+	 * Overriding primitive data parsing since we support mixed primitive/array
+	 * data for float bars
+	 * @protected
+	 */
+  parsePrimitiveData(meta, data, start, count) {
+    return parseArrayOrPrimitive(meta, data, start, count);
+  }
+
+  /**
+	 * Overriding array data parsing since we support mixed primitive/array
+	 * data for float bars
+	 * @protected
+	 */
+  parseArrayData(meta, data, start, count) {
+    return parseArrayOrPrimitive(meta, data, start, count);
+  }
+
+  /**
+	 * Overriding object data parsing since we support mixed primitive/array
+	 * value-scale data for float bars
+	 * @protected
+	 */
+  parseObjectData(meta, data, start, count) {
+    const {iScale, vScale} = meta;
+    const {xAxisKey = 'x', yAxisKey = 'y'} = this._parsing;
+    const iAxisKey = iScale.axis === 'x' ? xAxisKey : yAxisKey;
+    const vAxisKey = vScale.axis === 'x' ? xAxisKey : yAxisKey;
+    const parsed = [];
+    let i, ilen, item, obj;
+    for (i = start, ilen = start + count; i < ilen; ++i) {
+      obj = data[i];
+      item = {};
+      item[iScale.axis] = iScale.parse(resolveObjectKey(obj, iAxisKey), i);
+      parsed.push(parseValue(resolveObjectKey(obj, vAxisKey), item, vScale, i));
+    }
+    return parsed;
+  }
+
+  /**
+	 * @protected
+	 */
+  updateRangeFromParsed(range, scale, parsed, stack) {
+    super.updateRangeFromParsed(range, scale, parsed, stack);
+    const custom = parsed._custom;
+    if (custom && scale === this._cachedMeta.vScale) {
+      // float bar: only one end of the bar is considered by `super`
+      range.min = Math.min(range.min, custom.min);
+      range.max = Math.max(range.max, custom.max);
+    }
+  }
+
+  /**
+	 * @return {number|boolean}
+	 * @protected
+	 */
+  getMaxOverflow() {
+    return 0;
+  }
+
+  /**
+	 * @protected
+	 */
+  getLabelAndValue(index) {
+    const meta = this._cachedMeta;
+    const {iScale, vScale} = meta;
+    const parsed = this.getParsed(index);
+    const custom = parsed._custom;
+    const value = isFloatBar(custom)
+      ? '[' + custom.start + ', ' + custom.end + ']'
+      : '' + vScale.getLabelForValue(parsed[vScale.axis]);
+
+    return {
+      label: '' + iScale.getLabelForValue(parsed[iScale.axis]),
+      value
+    };
+  }
+
+  initialize() {
+    this.enableOptionSharing = true;
+
+    super.initialize();
+
+    const meta = this._cachedMeta;
+    meta.stack = this.getDataset().stack;
+  }
+
+  update(mode) {
+    const meta = this._cachedMeta;
+    this.updateElements(meta.data, 0, meta.data.length, mode);
+  }
+
+  updateElements(bars, start, count, mode) {
+    const reset = mode === 'reset';
+    const {index, _cachedMeta: {vScale}} = this;
+    const base = vScale.getBasePixel();
+    const horizontal = vScale.isHorizontal();
+    const ruler = this._getRuler();
+    const {sharedOptions, includeOptions} = this._getSharedOptions(start, mode);
+
+    for (let i = start; i < start + count; i++) {
+      const parsed = this.getParsed(i);
+      const vpixels = reset || isNullOrUndef(parsed[vScale.axis]) ? {base, head: base} : this._calculateBarValuePixels(i);
+      const ipixels = this._calculateBarIndexPixels(i, ruler);
+      const stack = (parsed._stacks || {})[vScale.axis];
+
+      const properties = {
+        horizontal,
+        base: vpixels.base,
+        enableBorderRadius: !stack || isFloatBar(parsed._custom) || (index === stack._top || index === stack._bottom),
+        x: horizontal ? vpixels.head : ipixels.center,
+        y: horizontal ? ipixels.center : vpixels.head,
+        height: horizontal ? ipixels.size : Math.abs(vpixels.size),
+        width: horizontal ? Math.abs(vpixels.size) : ipixels.size
+      };
+
+      if (includeOptions) {
+        properties.options = sharedOptions || this.resolveDataElementOptions(i, bars[i].active ? 'active' : mode);
+      }
+      const options = properties.options || bars[i].options;
+      setBorderSkipped(properties, options, stack, index);
+      setInflateAmount(properties, options, ruler.ratio);
+      this.updateElement(bars[i], i, properties, mode);
+    }
+  }
+
+  /**
+	 * Returns the stacks based on groups and bar visibility.
+	 * @param {number} [last] - The dataset index
+	 * @param {number} [dataIndex] - The data index of the ruler
+	 * @returns {string[]} The list of stack IDs
+	 * @private
+	 */
+  _getStacks(last, dataIndex) {
+    const {iScale} = this._cachedMeta;
+    const metasets = iScale.getMatchingVisibleMetas(this._type)
+      .filter(meta => meta.controller.options.grouped);
+    const stacked = iScale.options.stacked;
+    const stacks = [];
+
+    const skipNull = (meta) => {
+      const parsed = meta.controller.getParsed(dataIndex);
+      const val = parsed && parsed[meta.vScale.axis];
+
+      if (isNullOrUndef(val) || isNaN(val)) {
+        return true;
+      }
+    };
+
+    for (const meta of metasets) {
+      if (dataIndex !== undefined && skipNull(meta)) {
+        continue;
+      }
+
+      // stacked   | meta.stack
+      //           | found | not found | undefined
+      // false     |   x   |     x     |     x
+      // true      |       |     x     |
+      // undefined |       |     x     |     x
+      if (stacked === false || stacks.indexOf(meta.stack) === -1 ||
+				(stacked === undefined && meta.stack === undefined)) {
+        stacks.push(meta.stack);
+      }
+      if (meta.index === last) {
+        break;
+      }
+    }
+
+    // No stacks? that means there is no visible data. Let's still initialize an `undefined`
+    // stack where possible invisible bars will be located.
+    // https://github.com/chartjs/Chart.js/issues/6368
+    if (!stacks.length) {
+      stacks.push(undefined);
+    }
+
+    return stacks;
+  }
+
+  /**
+	 * Returns the effective number of stacks based on groups and bar visibility.
+	 * @private
+	 */
+  _getStackCount(index) {
+    return this._getStacks(undefined, index).length;
+  }
+
+  /**
+	 * Returns the stack index for the given dataset based on groups and bar visibility.
+	 * @param {number} [datasetIndex] - The dataset index
+	 * @param {string} [name] - The stack name to find
+   * @param {number} [dataIndex]
+	 * @returns {number} The stack index
+	 * @private
+	 */
+  _getStackIndex(datasetIndex, name, dataIndex) {
+    const stacks = this._getStacks(datasetIndex, dataIndex);
+    const index = (name !== undefined)
+      ? stacks.indexOf(name)
+      : -1; // indexOf returns -1 if element is not present
+
+    return (index === -1)
+      ? stacks.length - 1
+      : index;
+  }
+
+  /**
+	 * @private
+	 */
+  _getRuler() {
+    const opts = this.options;
+    const meta = this._cachedMeta;
+    const iScale = meta.iScale;
+    const pixels = [];
+    let i, ilen;
+
+    for (i = 0, ilen = meta.data.length; i < ilen; ++i) {
+      pixels.push(iScale.getPixelForValue(this.getParsed(i)[iScale.axis], i));
+    }
+
+    const barThickness = opts.barThickness;
+    const min = barThickness || computeMinSampleSize(meta);
+
+    return {
+      min,
+      pixels,
+      start: iScale._startPixel,
+      end: iScale._endPixel,
+      stackCount: this._getStackCount(),
+      scale: iScale,
+      grouped: opts.grouped,
+      // bar thickness ratio used for non-grouped bars
+      ratio: barThickness ? 1 : opts.categoryPercentage * opts.barPercentage
+    };
+  }
+
+  /**
+	 * Note: pixel values are not clamped to the scale area.
+	 * @private
+	 */
+  _calculateBarValuePixels(index) {
+    const {_cachedMeta: {vScale, _stacked, index: datasetIndex}, options: {base: baseValue, minBarLength}} = this;
+    const actualBase = baseValue || 0;
+    const parsed = this.getParsed(index);
+    const custom = parsed._custom;
+    const floating = isFloatBar(custom);
+    let value = parsed[vScale.axis];
+    let start = 0;
+    let length = _stacked ? this.applyStack(vScale, parsed, _stacked) : value;
+    let head, size;
+
+    if (length !== value) {
+      start = length - value;
+      length = value;
+    }
+
+    if (floating) {
+      value = custom.barStart;
+      length = custom.barEnd - custom.barStart;
+      // bars crossing origin are not stacked
+      if (value !== 0 && sign(value) !== sign(custom.barEnd)) {
+        start = 0;
+      }
+      start += value;
+    }
+
+    const startValue = !isNullOrUndef(baseValue) && !floating ? baseValue : start;
+    let base = vScale.getPixelForValue(startValue);
+
+    if (this.chart.getDataVisibility(index)) {
+      head = vScale.getPixelForValue(start + length);
+    } else {
+      // When not visible, no height
+      head = base;
+    }
+
+    size = head - base;
+
+    if (Math.abs(size) < minBarLength) {
+      size = barSign(size, vScale, actualBase) * minBarLength;
+      if (value === actualBase) {
+        base -= size / 2;
+      }
+      const startPixel = vScale.getPixelForDecimal(0);
+      const endPixel = vScale.getPixelForDecimal(1);
+      const min = Math.min(startPixel, endPixel);
+      const max = Math.max(startPixel, endPixel);
+      base = Math.max(Math.min(base, max), min);
+      head = base + size;
+
+      if (_stacked && !floating) {
+        // visual data coordinates after applying minBarLength
+        parsed._stacks[vScale.axis]._visualValues[datasetIndex] = vScale.getValueForPixel(head) - vScale.getValueForPixel(base);
+      }
+    }
+
+    if (base === vScale.getPixelForValue(actualBase)) {
+      const halfGrid = sign(size) * vScale.getLineWidthForValue(actualBase) / 2;
+      base += halfGrid;
+      size -= halfGrid;
+    }
+
+    return {
+      size,
+      base,
+      head,
+      center: head + size / 2
+    };
+  }
+
+  /**
+	 * @private
+	 */
+  _calculateBarIndexPixels(index, ruler) {
+    const scale = ruler.scale;
+    const options = this.options;
+    const skipNull = options.skipNull;
+    const maxBarThickness = valueOrDefault(options.maxBarThickness, Infinity);
+    let center, size;
+    if (ruler.grouped) {
+      const stackCount = skipNull ? this._getStackCount(index) : ruler.stackCount;
+      const range = options.barThickness === 'flex'
+        ? computeFlexCategoryTraits(index, ruler, options, stackCount)
+        : computeFitCategoryTraits(index, ruler, options, stackCount);
+
+      const stackIndex = this._getStackIndex(this.index, this._cachedMeta.stack, skipNull ? index : undefined);
+      center = range.start + (range.chunk * stackIndex) + (range.chunk / 2);
+      size = Math.min(maxBarThickness, range.chunk * range.ratio);
+    } else {
+      // For non-grouped bar charts, exact pixel values are used
+      center = scale.getPixelForValue(this.getParsed(index)[scale.axis], index);
+      size = Math.min(maxBarThickness, ruler.min * ruler.ratio);
+    }
+
+    return {
+      base: center - size / 2,
+      head: center + size / 2,
+      center,
+      size
+    };
+  }
+
+  draw() {
+    const meta = this._cachedMeta;
+    const vScale = meta.vScale;
+    const rects = meta.data;
+    const ilen = rects.length;
+    let i = 0;
+
+    for (; i < ilen; ++i) {
+      if (this.getParsed(i)[vScale.axis] !== null) {
+        rects[i].draw(this._ctx);
+      }
+    }
+  }
+
+}

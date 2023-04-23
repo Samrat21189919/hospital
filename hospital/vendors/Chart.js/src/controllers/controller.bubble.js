@@ -1,122 +1,169 @@
-"use strict";
+import DatasetController from '../core/core.datasetController.js';
+import {valueOrDefault} from '../helpers/helpers.core.js';
 
-module.exports = function(Chart) {
+export default class BubbleController extends DatasetController {
 
-	var helpers = Chart.helpers;
+  static id = 'bubble';
 
-	Chart.defaults.bubble = {
-		hover: {
-			mode: "single"
-		},
+  /**
+   * @type {any}
+   */
+  static defaults = {
+    datasetElementType: false,
+    dataElementType: 'point',
 
-		scales: {
-			xAxes: [{
-				type: "linear", // bubble should probably use a linear scale by default
-				position: "bottom",
-				id: "x-axis-0" // need an ID so datasets can reference the scale
-			}],
-			yAxes: [{
-				type: "linear",
-				position: "left",
-				id: "y-axis-0"
-			}]
-		},
+    animations: {
+      numbers: {
+        type: 'number',
+        properties: ['x', 'y', 'borderWidth', 'radius']
+      }
+    }
+  };
 
-		tooltips: {
-			callbacks: {
-				title: function(tooltipItems, data) {
-					// Title doesn't make sense for scatter since we format the data as a point
-					return '';
-				},
-				label: function(tooltipItem, data) {
-					var datasetLabel = data.datasets[tooltipItem.datasetIndex].label || '';
-					var dataPoint = data.datasets[tooltipItem.datasetIndex].data[tooltipItem.index];
-					return datasetLabel + ': (' + dataPoint.x + ', ' + dataPoint.y + ', ' + dataPoint.r + ')';
-				}
-			}
-		}
-	};
+  /**
+   * @type {any}
+   */
+  static overrides = {
+    scales: {
+      x: {
+        type: 'linear'
+      },
+      y: {
+        type: 'linear'
+      }
+    }
+  };
 
-	Chart.controllers.bubble = Chart.DatasetController.extend({
+  initialize() {
+    this.enableOptionSharing = true;
+    super.initialize();
+  }
 
-		dataElementType: Chart.elements.Point,
+  /**
+	 * Parse array of primitive values
+	 * @protected
+	 */
+  parsePrimitiveData(meta, data, start, count) {
+    const parsed = super.parsePrimitiveData(meta, data, start, count);
+    for (let i = 0; i < parsed.length; i++) {
+      parsed[i]._custom = this.resolveDataElementOptions(i + start).radius;
+    }
+    return parsed;
+  }
 
-		update: function update(reset) {
-			var meta = this.getMeta();
-			var points = meta.data;
+  /**
+	 * Parse array of arrays
+	 * @protected
+	 */
+  parseArrayData(meta, data, start, count) {
+    const parsed = super.parseArrayData(meta, data, start, count);
+    for (let i = 0; i < parsed.length; i++) {
+      const item = data[start + i];
+      parsed[i]._custom = valueOrDefault(item[2], this.resolveDataElementOptions(i + start).radius);
+    }
+    return parsed;
+  }
 
-			// Update Points
-			helpers.each(points, function(point, index) {
-				this.updateElement(point, index, reset);
-			}, this);
-		},
+  /**
+	 * Parse array of objects
+	 * @protected
+	 */
+  parseObjectData(meta, data, start, count) {
+    const parsed = super.parseObjectData(meta, data, start, count);
+    for (let i = 0; i < parsed.length; i++) {
+      const item = data[start + i];
+      parsed[i]._custom = valueOrDefault(item && item.r && +item.r, this.resolveDataElementOptions(i + start).radius);
+    }
+    return parsed;
+  }
 
-		updateElement: function(point, index, reset) {
-			var meta = this.getMeta();
-			var xScale = this.getScaleForId(meta.xAxisID);
-			var yScale = this.getScaleForId(meta.yAxisID);
+  /**
+	 * @protected
+	 */
+  getMaxOverflow() {
+    const data = this._cachedMeta.data;
 
-			var custom = point.custom || {};
-			var dataset = this.getDataset();
-			var data = dataset.data[index];
-			var pointElementOptions = this.chart.options.elements.point;
+    let max = 0;
+    for (let i = data.length - 1; i >= 0; --i) {
+      max = Math.max(max, data[i].size(this.resolveDataElementOptions(i)) / 2);
+    }
+    return max > 0 && max;
+  }
 
-			helpers.extend(point, {
-				// Utility
-				_xScale: xScale,
-				_yScale: yScale,
-				_datasetIndex: this.index,
-				_index: index,
+  /**
+	 * @protected
+	 */
+  getLabelAndValue(index) {
+    const meta = this._cachedMeta;
+    const labels = this.chart.data.labels || [];
+    const {xScale, yScale} = meta;
+    const parsed = this.getParsed(index);
+    const x = xScale.getLabelForValue(parsed.x);
+    const y = yScale.getLabelForValue(parsed.y);
+    const r = parsed._custom;
 
-				// Desired view properties
-				_model: {
-					x: reset ? xScale.getPixelForDecimal(0.5) : xScale.getPixelForValue(data, index, this.index, this.chart.isCombo),
-					y: reset ? yScale.getBasePixel() : yScale.getPixelForValue(data, index, this.index),
-					// Appearance
-					radius: reset ? 0 : custom.radius ? custom.radius : this.getRadius(data),
-					backgroundColor: custom.backgroundColor ? custom.backgroundColor : helpers.getValueAtIndexOrDefault(dataset.backgroundColor, index, pointElementOptions.backgroundColor),
-					borderColor: custom.borderColor ? custom.borderColor : helpers.getValueAtIndexOrDefault(dataset.borderColor, index, pointElementOptions.borderColor),
-					borderWidth: custom.borderWidth ? custom.borderWidth : helpers.getValueAtIndexOrDefault(dataset.borderWidth, index, pointElementOptions.borderWidth),
+    return {
+      label: labels[index] || '',
+      value: '(' + x + ', ' + y + (r ? ', ' + r : '') + ')'
+    };
+  }
 
-					// Tooltip
-					hitRadius: custom.hitRadius ? custom.hitRadius : helpers.getValueAtIndexOrDefault(dataset.hitRadius, index, pointElementOptions.hitRadius)
-				}
-			});
+  update(mode) {
+    const points = this._cachedMeta.data;
 
-			var model = point._model;
-			model.skip = custom.skip ? custom.skip : (isNaN(model.x) || isNaN(model.y));
+    // Update Points
+    this.updateElements(points, 0, points.length, mode);
+  }
 
-			point.pivot();
-		},
+  updateElements(points, start, count, mode) {
+    const reset = mode === 'reset';
+    const {iScale, vScale} = this._cachedMeta;
+    const {sharedOptions, includeOptions} = this._getSharedOptions(start, mode);
+    const iAxis = iScale.axis;
+    const vAxis = vScale.axis;
 
-		getRadius: function(value) {
-			return value.r || this.chart.options.elements.point.radius;
-		},
+    for (let i = start; i < start + count; i++) {
+      const point = points[i];
+      const parsed = !reset && this.getParsed(i);
+      const properties = {};
+      const iPixel = properties[iAxis] = reset ? iScale.getPixelForDecimal(0.5) : iScale.getPixelForValue(parsed[iAxis]);
+      const vPixel = properties[vAxis] = reset ? vScale.getBasePixel() : vScale.getPixelForValue(parsed[vAxis]);
 
-		setHoverStyle: function(point) {
-			// Point
-			var dataset = this.chart.data.datasets[point._datasetIndex];
-			var index = point._index;
-			var custom = point.custom || {};
-			var model = point._model;
+      properties.skip = isNaN(iPixel) || isNaN(vPixel);
 
-			model.radius = custom.hoverRadius ? custom.hoverRadius : (helpers.getValueAtIndexOrDefault(dataset.hoverRadius, index, this.chart.options.elements.point.hoverRadius)) + this.getRadius(this.getDataset().data[point._index]);
-			model.backgroundColor = custom.hoverBackgroundColor ? custom.hoverBackgroundColor : helpers.getValueAtIndexOrDefault(dataset.hoverBackgroundColor, index, helpers.getHoverColor(model.backgroundColor));
-			model.borderColor = custom.hoverBorderColor ? custom.hoverBorderColor : helpers.getValueAtIndexOrDefault(dataset.hoverBorderColor, index, helpers.getHoverColor(model.borderColor));
-			model.borderWidth = custom.hoverBorderWidth ? custom.hoverBorderWidth : helpers.getValueAtIndexOrDefault(dataset.hoverBorderWidth, index, model.borderWidth);
-		},
+      if (includeOptions) {
+        properties.options = sharedOptions || this.resolveDataElementOptions(i, point.active ? 'active' : mode);
 
-		removeHoverStyle: function(point) {
-			var dataset = this.chart.data.datasets[point._datasetIndex];
-			var index = point._index;
-			var custom = point.custom || {};
-			var model = point._model;
-			var pointElementOptions = this.chart.options.elements.point;
+        if (reset) {
+          properties.options.radius = 0;
+        }
+      }
 
-			model.radius = custom.radius ? custom.radius : this.getRadius(dataset.data[point._index]);
-			model.backgroundColor = custom.backgroundColor ? custom.backgroundColor : helpers.getValueAtIndexOrDefault(dataset.backgroundColor, index, pointElementOptions.backgroundColor);
-			model.borderColor = custom.borderColor ? custom.borderColor : helpers.getValueAtIndexOrDefault(dataset.borderColor, index, pointElementOptions.borderColor);
-			model.borderWidth = custom.borderWidth ? custom.borderWidth : helpers.getValueAtIndexOrDefault(dataset.borderWidth, index, pointElementOptions.borderWidth);
-		}
-	});
-};
+      this.updateElement(point, i, properties, mode);
+    }
+  }
+
+  /**
+	 * @param {number} index
+	 * @param {string} [mode]
+	 * @protected
+	 */
+  resolveDataElementOptions(index, mode) {
+    const parsed = this.getParsed(index);
+    let values = super.resolveDataElementOptions(index, mode);
+
+    // In case values were cached (and thus frozen), we need to clone the values
+    if (values.$shared) {
+      values = Object.assign({}, values, {$shared: false});
+    }
+
+    // Custom radius resolution
+    const radius = values.radius;
+    if (mode !== 'active') {
+      values.radius = 0;
+    }
+    values.radius += valueOrDefault(parsed && parsed._custom, radius);
+
+    return values;
+  }
+}

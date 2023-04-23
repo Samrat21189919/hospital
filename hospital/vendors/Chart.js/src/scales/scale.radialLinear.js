@@ -1,457 +1,642 @@
-"use strict";
+import defaults from '../core/core.defaults.js';
+import {_longestText, addRoundedRectPath, renderText} from '../helpers/helpers.canvas.js';
+import {HALF_PI, TAU, toDegrees, toRadians, _normalizeAngle, PI} from '../helpers/helpers.math.js';
+import LinearScaleBase from './scale.linearbase.js';
+import Ticks from '../core/core.ticks.js';
+import {valueOrDefault, isArray, isFinite, callback as callCallback, isNullOrUndef} from '../helpers/helpers.core.js';
+import {createContext, toFont, toPadding, toTRBLCorners} from '../helpers/helpers.options.js';
 
-module.exports = function(Chart) {
+function getTickBackdropHeight(opts) {
+  const tickOpts = opts.ticks;
 
-	var helpers = Chart.helpers;
-	var globalDefaults = Chart.defaults.global;
+  if (tickOpts.display && opts.display) {
+    const padding = toPadding(tickOpts.backdropPadding);
+    return valueOrDefault(tickOpts.font && tickOpts.font.size, defaults.font.size) + padding.height;
+  }
+  return 0;
+}
 
-	var defaultConfig = {
-		display: true,
+function measureLabelSize(ctx, font, label) {
+  label = isArray(label) ? label : [label];
+  return {
+    w: _longestText(ctx, font.string, label),
+    h: label.length * font.lineHeight
+  };
+}
 
-		//Boolean - Whether to animate scaling the chart from the centre
-		animate: true,
-		lineArc: false,
-		position: "chartArea",
+function determineLimits(angle, pos, size, min, max) {
+  if (angle === min || angle === max) {
+    return {
+      start: pos - (size / 2),
+      end: pos + (size / 2)
+    };
+  } else if (angle < min || angle > max) {
+    return {
+      start: pos - size,
+      end: pos
+    };
+  }
 
-		angleLines: {
-			display: true,
-			color: "rgba(0, 0, 0, 0.1)",
-			lineWidth: 1
-		},
+  return {
+    start: pos,
+    end: pos + size
+  };
+}
 
-		// label settings
-		ticks: {
-			//Boolean - Show a backdrop to the scale label
-			showLabelBackdrop: true,
+/**
+ * Helper function to fit a radial linear scale with point labels
+ */
+function fitWithPointLabels(scale) {
 
-			//String - The colour of the label backdrop
-			backdropColor: "rgba(255,255,255,0.75)",
+  // Right, this is really confusing and there is a lot of maths going on here
+  // The gist of the problem is here: https://gist.github.com/nnnick/696cc9c55f4b0beb8fe9
+  //
+  // Reaction: https://dl.dropboxusercontent.com/u/34601363/toomuchscience.gif
+  //
+  // Solution:
+  //
+  // We assume the radius of the polygon is half the size of the canvas at first
+  // at each index we check if the text overlaps.
+  //
+  // Where it does, we store that angle and that index.
+  //
+  // After finding the largest index and angle we calculate how much we need to remove
+  // from the shape radius to move the point inwards by that x.
+  //
+  // We average the left and right distances to get the maximum shape radius that can fit in the box
+  // along with labels.
+  //
+  // Once we have that, we can find the centre point for the chart, by taking the x text protrusion
+  // on each side, removing that from the size, halving it and adding the left x protrusion width.
+  //
+  // This will mean we have a shape fitted to the canvas, as large as it can be with the labels
+  // and position it in the most space efficient manner
+  //
+  // https://dl.dropboxusercontent.com/u/34601363/yeahscience.gif
 
-			//Number - The backdrop padding above & below the label in pixels
-			backdropPaddingY: 2,
+  // Get maximum radius of the polygon. Either half the height (minus the text width) or half the width.
+  // Use this to calculate the offset + change. - Make sure L/R protrusion is at least 0 to stop issues with centre points
+  const orig = {
+    l: scale.left + scale._padding.left,
+    r: scale.right - scale._padding.right,
+    t: scale.top + scale._padding.top,
+    b: scale.bottom - scale._padding.bottom
+  };
+  const limits = Object.assign({}, orig);
+  const labelSizes = [];
+  const padding = [];
+  const valueCount = scale._pointLabels.length;
+  const pointLabelOpts = scale.options.pointLabels;
+  const additionalAngle = pointLabelOpts.centerPointLabels ? PI / valueCount : 0;
 
-			//Number - The backdrop padding to the side of the label in pixels
-			backdropPaddingX: 2
-		},
+  for (let i = 0; i < valueCount; i++) {
+    const opts = pointLabelOpts.setContext(scale.getPointLabelContext(i));
+    padding[i] = opts.padding;
+    const pointPosition = scale.getPointPosition(i, scale.drawingArea + padding[i], additionalAngle);
+    const plFont = toFont(opts.font);
+    const textSize = measureLabelSize(scale.ctx, plFont, scale._pointLabels[i]);
+    labelSizes[i] = textSize;
 
-		pointLabels: {
-			//Number - Point label font size in pixels
-			fontSize: 10,
+    const angleRadians = _normalizeAngle(scale.getIndexAngle(i) + additionalAngle);
+    const angle = Math.round(toDegrees(angleRadians));
+    const hLimits = determineLimits(angle, pointPosition.x, textSize.w, 0, 180);
+    const vLimits = determineLimits(angle, pointPosition.y, textSize.h, 90, 270);
+    updateLimits(limits, orig, angleRadians, hLimits, vLimits);
+  }
 
-			//Function - Used to convert point labels
-			callback: function(label) {
-				return label;
-			}
-		}
-	};
+  scale.setCenterPoint(
+    orig.l - limits.l,
+    limits.r - orig.r,
+    orig.t - limits.t,
+    limits.b - orig.b
+  );
 
-	var LinearRadialScale = Chart.Scale.extend({
-		getValueCount: function() {
-			return this.chart.data.labels.length;
-		},
-		setDimensions: function() {
-			var options = this.options;
-			// Set the unconstrained dimension before label rotation
-			this.width = this.maxWidth;
-			this.height = this.maxHeight;
-			this.xCenter = Math.round(this.width / 2);
-			this.yCenter = Math.round(this.height / 2);
+  // Now that text size is determined, compute the full positions
+  scale._pointLabelItems = buildPointLabelItems(scale, labelSizes, padding);
+}
 
-			var minSize = helpers.min([this.height, this.width]);
-			var tickFontSize = helpers.getValueOrDefault(options.ticks.fontSize, globalDefaults.defaultFontSize);
-			this.drawingArea = (options.display) ? (minSize / 2) - (tickFontSize / 2 + options.ticks.backdropPaddingY) : (minSize / 2);
-		},
-		determineDataLimits: function() {
-			this.min = null;
-			this.max = null;
+function updateLimits(limits, orig, angle, hLimits, vLimits) {
+  const sin = Math.abs(Math.sin(angle));
+  const cos = Math.abs(Math.cos(angle));
+  let x = 0;
+  let y = 0;
+  if (hLimits.start < orig.l) {
+    x = (orig.l - hLimits.start) / sin;
+    limits.l = Math.min(limits.l, orig.l - x);
+  } else if (hLimits.end > orig.r) {
+    x = (hLimits.end - orig.r) / sin;
+    limits.r = Math.max(limits.r, orig.r + x);
+  }
+  if (vLimits.start < orig.t) {
+    y = (orig.t - vLimits.start) / cos;
+    limits.t = Math.min(limits.t, orig.t - y);
+  } else if (vLimits.end > orig.b) {
+    y = (vLimits.end - orig.b) / cos;
+    limits.b = Math.max(limits.b, orig.b + y);
+  }
+}
 
-			helpers.each(this.chart.data.datasets, function(dataset, datasetIndex) {
-				if (this.chart.isDatasetVisible(datasetIndex)) {
-					var meta = this.chart.getDatasetMeta(datasetIndex);
-					helpers.each(dataset.data, function(rawValue, index) {
-						var value = +this.getRightValue(rawValue);
-						if (isNaN(value) || meta.data[index].hidden) {
-							return;
-						}
+function buildPointLabelItems(scale, labelSizes, padding) {
+  const items = [];
+  const valueCount = scale._pointLabels.length;
+  const opts = scale.options;
+  const extra = getTickBackdropHeight(opts) / 2;
+  const outerDistance = scale.drawingArea;
+  const additionalAngle = opts.pointLabels.centerPointLabels ? PI / valueCount : 0;
 
-						if (this.min === null) {
-							this.min = value;
-						} else if (value < this.min) {
-							this.min = value;
-						}
+  for (let i = 0; i < valueCount; i++) {
+    const pointLabelPosition = scale.getPointPosition(i, outerDistance + extra + padding[i], additionalAngle);
+    const angle = Math.round(toDegrees(_normalizeAngle(pointLabelPosition.angle + HALF_PI)));
+    const size = labelSizes[i];
+    const y = yForAngle(pointLabelPosition.y, size.h, angle);
+    const textAlign = getTextAlignForAngle(angle);
+    const left = leftForTextAlign(pointLabelPosition.x, size.w, textAlign);
 
-						if (this.max === null) {
-							this.max = value;
-						} else if (value > this.max) {
-							this.max = value;
-						}
-					}, this);
-				}
-			}, this);
+    items.push({
+      // Text position
+      x: pointLabelPosition.x,
+      y,
 
-			// If we are forcing it to begin at 0, but 0 will already be rendered on the chart,
-			// do nothing since that would make the chart weird. If the user really wants a weird chart
-			// axis, they can manually override it
-			if (this.options.ticks.beginAtZero) {
-				var minSign = helpers.sign(this.min);
-				var maxSign = helpers.sign(this.max);
+      // Text rendering data
+      textAlign,
 
-				if (minSign < 0 && maxSign < 0) {
-					// move the top up to 0
-					this.max = 0;
-				} else if (minSign > 0 && maxSign > 0) {
-					// move the botttom down to 0
-					this.min = 0;
-				}
-			}
+      // Bounding box
+      left,
+      top: y,
+      right: left + size.w,
+      bottom: y + size.h
+    });
+  }
+  return items;
+}
 
-			if (this.options.ticks.min !== undefined) {
-				this.min = this.options.ticks.min;
-			} else if (this.options.ticks.suggestedMin !== undefined) {
-				this.min = Math.min(this.min, this.options.ticks.suggestedMin);
-			}
+function getTextAlignForAngle(angle) {
+  if (angle === 0 || angle === 180) {
+    return 'center';
+  } else if (angle < 180) {
+    return 'left';
+  }
 
-			if (this.options.ticks.max !== undefined) {
-				this.max = this.options.ticks.max;
-			} else if (this.options.ticks.suggestedMax !== undefined) {
-				this.max = Math.max(this.max, this.options.ticks.suggestedMax);
-			}
+  return 'right';
+}
 
-			if (this.min === this.max) {
-				this.min--;
-				this.max++;
-			}
-		},
-		buildTicks: function() {
+function leftForTextAlign(x, w, align) {
+  if (align === 'right') {
+    x -= w;
+  } else if (align === 'center') {
+    x -= (w / 2);
+  }
+  return x;
+}
 
+function yForAngle(y, h, angle) {
+  if (angle === 90 || angle === 270) {
+    y -= (h / 2);
+  } else if (angle > 270 || angle < 90) {
+    y -= h;
+  }
+  return y;
+}
 
-			this.ticks = [];
+function drawPointLabels(scale, labelCount) {
+  const {ctx, options: {pointLabels}} = scale;
 
-			// Figure out what the max number of ticks we can support it is based on the size of
-			// the axis area. For now, we say that the minimum tick spacing in pixels must be 50
-			// We also limit the maximum number of ticks to 11 which gives a nice 10 squares on
-			// the graph
-			var tickFontSize = helpers.getValueOrDefault(this.options.ticks.fontSize, globalDefaults.defaultFontSize);
-			var maxTicks = Math.min(this.options.ticks.maxTicksLimit ? this.options.ticks.maxTicksLimit : 11, Math.ceil(this.drawingArea / (1.5 * tickFontSize)));
-			maxTicks = Math.max(2, maxTicks); // Make sure we always have at least 2 ticks
+  for (let i = labelCount - 1; i >= 0; i--) {
+    const optsAtIndex = pointLabels.setContext(scale.getPointLabelContext(i));
+    const plFont = toFont(optsAtIndex.font);
+    const {x, y, textAlign, left, top, right, bottom} = scale._pointLabelItems[i];
+    const {backdropColor} = optsAtIndex;
 
-			// To get a "nice" value for the tick spacing, we will use the appropriately named
-			// "nice number" algorithm. See http://stackoverflow.com/questions/8506881/nice-label-algorithm-for-charts-with-minimum-ticks
-			// for details.
+    if (!isNullOrUndef(backdropColor)) {
+      const borderRadius = toTRBLCorners(optsAtIndex.borderRadius);
+      const padding = toPadding(optsAtIndex.backdropPadding);
+      ctx.fillStyle = backdropColor;
 
-			var niceRange = helpers.niceNum(this.max - this.min, false);
-			var spacing = helpers.niceNum(niceRange / (maxTicks - 1), true);
-			var niceMin = Math.floor(this.min / spacing) * spacing;
-			var niceMax = Math.ceil(this.max / spacing) * spacing;
+      const backdropLeft = left - padding.left;
+      const backdropTop = top - padding.top;
+      const backdropWidth = right - left + padding.width;
+      const backdropHeight = bottom - top + padding.height;
 
-			var numSpaces = Math.ceil((niceMax - niceMin) / spacing);
+      if (Object.values(borderRadius).some(v => v !== 0)) {
+        ctx.beginPath();
+        addRoundedRectPath(ctx, {
+          x: backdropLeft,
+          y: backdropTop,
+          w: backdropWidth,
+          h: backdropHeight,
+          radius: borderRadius,
+        });
+        ctx.fill();
+      } else {
+        ctx.fillRect(backdropLeft, backdropTop, backdropWidth, backdropHeight);
+      }
+    }
 
-			// Put the values into the ticks array
-			this.ticks.push(this.options.ticks.min !== undefined ? this.options.ticks.min : niceMin);
-			for (var j = 1; j < numSpaces; ++j) {
-				this.ticks.push(niceMin + (j * spacing));
-			}
-			this.ticks.push(this.options.ticks.max !== undefined ? this.options.ticks.max : niceMax);
+    renderText(
+      ctx,
+      scale._pointLabels[i],
+      x,
+      y + (plFont.lineHeight / 2),
+      plFont,
+      {
+        color: optsAtIndex.color,
+        textAlign: textAlign,
+        textBaseline: 'middle'
+      }
+    );
+  }
+}
 
-			// At this point, we need to update our max and min given the tick values since we have expanded the
-			// range of the scale
-			this.max = helpers.max(this.ticks);
-			this.min = helpers.min(this.ticks);
+function pathRadiusLine(scale, radius, circular, labelCount) {
+  const {ctx} = scale;
+  if (circular) {
+    // Draw circular arcs between the points
+    ctx.arc(scale.xCenter, scale.yCenter, radius, 0, TAU);
+  } else {
+    // Draw straight lines connecting each index
+    let pointPosition = scale.getPointPosition(0, radius);
+    ctx.moveTo(pointPosition.x, pointPosition.y);
 
-			if (this.options.ticks.reverse) {
-				this.ticks.reverse();
+    for (let i = 1; i < labelCount; i++) {
+      pointPosition = scale.getPointPosition(i, radius);
+      ctx.lineTo(pointPosition.x, pointPosition.y);
+    }
+  }
+}
 
-				this.start = this.max;
-				this.end = this.min;
-			} else {
-				this.start = this.min;
-				this.end = this.max;
-			}
+function drawRadiusLine(scale, gridLineOpts, radius, labelCount, borderOpts) {
+  const ctx = scale.ctx;
+  const circular = gridLineOpts.circular;
 
-			this.zeroLineIndex = this.ticks.indexOf(0);
-		},
-		convertTicksToLabels: function() {
-			Chart.Scale.prototype.convertTicksToLabels.call(this);
+  const {color, lineWidth} = gridLineOpts;
 
-			// Point labels
-			this.pointLabels = this.chart.data.labels.map(this.options.pointLabels.callback, this);
-		},
-		getLabelForIndex: function(index, datasetIndex) {
-			return +this.getRightValue(this.chart.data.datasets[datasetIndex].data[index]);
-		},
-		fit: function() {
-			/*
-			 * Right, this is really confusing and there is a lot of maths going on here
-			 * The gist of the problem is here: https://gist.github.com/nnnick/696cc9c55f4b0beb8fe9
-			 *
-			 * Reaction: https://dl.dropboxusercontent.com/u/34601363/toomuchscience.gif
-			 *
-			 * Solution:
-			 *
-			 * We assume the radius of the polygon is half the size of the canvas at first
-			 * at each index we check if the text overlaps.
-			 *
-			 * Where it does, we store that angle and that index.
-			 *
-			 * After finding the largest index and angle we calculate how much we need to remove
-			 * from the shape radius to move the point inwards by that x.
-			 *
-			 * We average the left and right distances to get the maximum shape radius that can fit in the box
-			 * along with labels.
-			 *
-			 * Once we have that, we can find the centre point for the chart, by taking the x text protrusion
-			 * on each side, removing that from the size, halving it and adding the left x protrusion width.
-			 *
-			 * This will mean we have a shape fitted to the canvas, as large as it can be with the labels
-			 * and position it in the most space efficient manner
-			 *
-			 * https://dl.dropboxusercontent.com/u/34601363/yeahscience.gif
-			 */
+  if ((!circular && !labelCount) || !color || !lineWidth || radius < 0) {
+    return;
+  }
 
-			var pointLabels = this.options.pointLabels;
-			var pointLabelFontSize = helpers.getValueOrDefault(pointLabels.fontSize, globalDefaults.defaultFontSize);
-			var pointLabeFontStyle = helpers.getValueOrDefault(pointLabels.fontStyle, globalDefaults.defaultFontStyle);
-			var pointLabeFontFamily = helpers.getValueOrDefault(pointLabels.fontFamily, globalDefaults.defaultFontFamily);
-			var pointLabeFont = helpers.fontString(pointLabelFontSize, pointLabeFontStyle, pointLabeFontFamily);
+  ctx.save();
+  ctx.strokeStyle = color;
+  ctx.lineWidth = lineWidth;
+  ctx.setLineDash(borderOpts.dash);
+  ctx.lineDashOffset = borderOpts.dashOffset;
 
-			// Get maximum radius of the polygon. Either half the height (minus the text width) or half the width.
-			// Use this to calculate the offset + change. - Make sure L/R protrusion is at least 0 to stop issues with centre points
-			var largestPossibleRadius = helpers.min([(this.height / 2 - pointLabelFontSize - 5), this.width / 2]),
-				pointPosition,
-				i,
-				textWidth,
-				halfTextWidth,
-				furthestRight = this.width,
-				furthestRightIndex,
-				furthestRightAngle,
-				furthestLeft = 0,
-				furthestLeftIndex,
-				furthestLeftAngle,
-				xProtrusionLeft,
-				xProtrusionRight,
-				radiusReductionRight,
-				radiusReductionLeft,
-				maxWidthRadius;
-			this.ctx.font = pointLabeFont;
+  ctx.beginPath();
+  pathRadiusLine(scale, radius, circular, labelCount);
+  ctx.closePath();
+  ctx.stroke();
+  ctx.restore();
+}
 
-			for (i = 0; i < this.getValueCount(); i++) {
-				// 5px to space the text slightly out - similar to what we do in the draw function.
-				pointPosition = this.getPointPosition(i, largestPossibleRadius);
-				textWidth = this.ctx.measureText(this.pointLabels[i] ? this.pointLabels[i] : '').width + 5;
-				if (i === 0 || i === this.getValueCount() / 2) {
-					// If we're at index zero, or exactly the middle, we're at exactly the top/bottom
-					// of the radar chart, so text will be aligned centrally, so we'll half it and compare
-					// w/left and right text sizes
-					halfTextWidth = textWidth / 2;
-					if (pointPosition.x + halfTextWidth > furthestRight) {
-						furthestRight = pointPosition.x + halfTextWidth;
-						furthestRightIndex = i;
-					}
-					if (pointPosition.x - halfTextWidth < furthestLeft) {
-						furthestLeft = pointPosition.x - halfTextWidth;
-						furthestLeftIndex = i;
-					}
-				} else if (i < this.getValueCount() / 2) {
-					// Less than half the values means we'll left align the text
-					if (pointPosition.x + textWidth > furthestRight) {
-						furthestRight = pointPosition.x + textWidth;
-						furthestRightIndex = i;
-					}
-				} else if (i > this.getValueCount() / 2) {
-					// More than half the values means we'll right align the text
-					if (pointPosition.x - textWidth < furthestLeft) {
-						furthestLeft = pointPosition.x - textWidth;
-						furthestLeftIndex = i;
-					}
-				}
-			}
+function createPointLabelContext(parent, index, label) {
+  return createContext(parent, {
+    label,
+    index,
+    type: 'pointLabel'
+  });
+}
 
-			xProtrusionLeft = furthestLeft;
-			xProtrusionRight = Math.ceil(furthestRight - this.width);
+export default class RadialLinearScale extends LinearScaleBase {
 
-			furthestRightAngle = this.getIndexAngle(furthestRightIndex);
-			furthestLeftAngle = this.getIndexAngle(furthestLeftIndex);
+  static id = 'radialLinear';
 
-			radiusReductionRight = xProtrusionRight / Math.sin(furthestRightAngle + Math.PI / 2);
-			radiusReductionLeft = xProtrusionLeft / Math.sin(furthestLeftAngle + Math.PI / 2);
+  /**
+   * @type {any}
+   */
+  static defaults = {
+    display: true,
 
-			// Ensure we actually need to reduce the size of the chart
-			radiusReductionRight = (helpers.isNumber(radiusReductionRight)) ? radiusReductionRight : 0;
-			radiusReductionLeft = (helpers.isNumber(radiusReductionLeft)) ? radiusReductionLeft : 0;
+    // Boolean - Whether to animate scaling the chart from the centre
+    animate: true,
+    position: 'chartArea',
 
-			this.drawingArea = Math.round(largestPossibleRadius - (radiusReductionLeft + radiusReductionRight) / 2);
-			this.setCenterPoint(radiusReductionLeft, radiusReductionRight);
-		},
-		setCenterPoint: function(leftMovement, rightMovement) {
+    angleLines: {
+      display: true,
+      lineWidth: 1,
+      borderDash: [],
+      borderDashOffset: 0.0
+    },
 
-			var maxRight = this.width - rightMovement - this.drawingArea,
-				maxLeft = leftMovement + this.drawingArea;
+    grid: {
+      circular: false
+    },
 
-			this.xCenter = Math.round(((maxLeft + maxRight) / 2) + this.left);
-			// Always vertically in the centre as the text height doesn't change
-			this.yCenter = Math.round((this.height / 2) + this.top);
-		},
+    startAngle: 0,
 
-		getIndexAngle: function(index) {
-			var angleMultiplier = (Math.PI * 2) / this.getValueCount();
-			// Start from the top instead of right, so remove a quarter of the circle
+    // label settings
+    ticks: {
+      // Boolean - Show a backdrop to the scale label
+      showLabelBackdrop: true,
 
-			return index * angleMultiplier - (Math.PI / 2);
-		},
-		getDistanceFromCenterForValue: function(value) {
-			if (value === null) {
-				return 0; // null always in center
-			}
+      callback: Ticks.formatters.numeric
+    },
 
-			// Take into account half font size + the yPadding of the top value
-			var scalingFactor = this.drawingArea / (this.max - this.min);
-			if (this.options.reverse) {
-				return (this.max - value) * scalingFactor;
-			} else {
-				return (value - this.min) * scalingFactor;
-			}
-		},
-		getPointPosition: function(index, distanceFromCenter) {
-			var thisAngle = this.getIndexAngle(index);
-			return {
-				x: Math.round(Math.cos(thisAngle) * distanceFromCenter) + this.xCenter,
-				y: Math.round(Math.sin(thisAngle) * distanceFromCenter) + this.yCenter
-			};
-		},
-		getPointPositionForValue: function(index, value) {
-			return this.getPointPosition(index, this.getDistanceFromCenterForValue(value));
-		},
+    pointLabels: {
+      backdropColor: undefined,
 
-		getBasePosition: function() {
-			var me = this;
-			var min = me.min;
-			var max = me.max;
+      // Number - The backdrop padding above & below the label in pixels
+      backdropPadding: 2,
 
-			return me.getPointPositionForValue(0,
-				me.beginAtZero? 0:
-				min < 0 && max < 0? max :
-				min > 0 && max > 0? min :
-				0);
-		},
+      // Boolean - if true, show point labels
+      display: true,
 
-		draw: function() {
-			if (this.options.display) {
-				var ctx = this.ctx;
-				helpers.each(this.ticks, function(label, index) {
-					// Don't draw a centre value (if it is minimum)
-					if (index > 0 || this.options.reverse) {
-						var yCenterOffset = this.getDistanceFromCenterForValue(this.ticks[index]);
-						var yHeight = this.yCenter - yCenterOffset;
+      // Number - Point label font size in pixels
+      font: {
+        size: 10
+      },
 
-						// Draw circular lines around the scale
-						if (this.options.gridLines.display) {
-							ctx.strokeStyle = this.options.gridLines.color;
-							ctx.lineWidth = this.options.gridLines.lineWidth;
+      // Function - Used to convert point labels
+      callback(label) {
+        return label;
+      },
 
-							if (this.options.lineArc) {
-								// Draw circular arcs between the points
-								ctx.beginPath();
-								ctx.arc(this.xCenter, this.yCenter, yCenterOffset, 0, Math.PI * 2);
-								ctx.closePath();
-								ctx.stroke();
-							} else {
-								// Draw straight lines connecting each index
-								ctx.beginPath();
-								for (var i = 0; i < this.getValueCount(); i++) {
-									var pointPosition = this.getPointPosition(i, this.getDistanceFromCenterForValue(this.ticks[index]));
-									if (i === 0) {
-										ctx.moveTo(pointPosition.x, pointPosition.y);
-									} else {
-										ctx.lineTo(pointPosition.x, pointPosition.y);
-									}
-								}
-								ctx.closePath();
-								ctx.stroke();
-							}
-						}
+      // Number - Additionl padding between scale and pointLabel
+      padding: 5,
 
-						if (this.options.ticks.display) {
-							var tickFontColor = helpers.getValueOrDefault(this.options.ticks.fontColor, globalDefaults.defaultFontColor);
-							var tickFontSize = helpers.getValueOrDefault(this.options.ticks.fontSize, globalDefaults.defaultFontSize);
-							var tickFontStyle = helpers.getValueOrDefault(this.options.ticks.fontStyle, globalDefaults.defaultFontStyle);
-							var tickFontFamily = helpers.getValueOrDefault(this.options.ticks.fontFamily, globalDefaults.defaultFontFamily);
-							var tickLabelFont = helpers.fontString(tickFontSize, tickFontStyle, tickFontFamily);
-							ctx.font = tickLabelFont;
+      // Boolean - if true, center point labels to slices in polar chart
+      centerPointLabels: false
+    }
+  };
 
-							if (this.options.ticks.showLabelBackdrop) {
-								var labelWidth = ctx.measureText(label).width;
-								ctx.fillStyle = this.options.ticks.backdropColor;
-								ctx.fillRect(
-									this.xCenter - labelWidth / 2 - this.options.ticks.backdropPaddingX,
-									yHeight - tickFontSize / 2 - this.options.ticks.backdropPaddingY,
-									labelWidth + this.options.ticks.backdropPaddingX * 2,
-									tickFontSize + this.options.ticks.backdropPaddingY * 2
-								);
-							}
+  static defaultRoutes = {
+    'angleLines.color': 'borderColor',
+    'pointLabels.color': 'color',
+    'ticks.color': 'color'
+  };
 
-							ctx.textAlign = 'center';
-							ctx.textBaseline = "middle";
-							ctx.fillStyle = tickFontColor;
-							ctx.fillText(label, this.xCenter, yHeight);
-						}
-					}
-				}, this);
+  static descriptors = {
+    angleLines: {
+      _fallback: 'grid'
+    }
+  };
 
-				if (!this.options.lineArc) {
-					ctx.lineWidth = this.options.angleLines.lineWidth;
-					ctx.strokeStyle = this.options.angleLines.color;
+  constructor(cfg) {
+    super(cfg);
 
-					for (var i = this.getValueCount() - 1; i >= 0; i--) {
-						if (this.options.angleLines.display) {
-							var outerPosition = this.getPointPosition(i, this.getDistanceFromCenterForValue(this.options.reverse ? this.min : this.max));
-							ctx.beginPath();
-							ctx.moveTo(this.xCenter, this.yCenter);
-							ctx.lineTo(outerPosition.x, outerPosition.y);
-							ctx.stroke();
-							ctx.closePath();
-						}
-						// Extra 3px out for some label spacing
-						var pointLabelPosition = this.getPointPosition(i, this.getDistanceFromCenterForValue(this.options.reverse ? this.min : this.max) + 5);
+    /** @type {number} */
+    this.xCenter = undefined;
+    /** @type {number} */
+    this.yCenter = undefined;
+    /** @type {number} */
+    this.drawingArea = undefined;
+    /** @type {string[]} */
+    this._pointLabels = [];
+    this._pointLabelItems = [];
+  }
 
-						var pointLabelFontColor = helpers.getValueOrDefault(this.options.pointLabels.fontColor, globalDefaults.defaultFontColor);
-						var pointLabelFontSize = helpers.getValueOrDefault(this.options.pointLabels.fontSize, globalDefaults.defaultFontSize);
-						var pointLabeFontStyle = helpers.getValueOrDefault(this.options.pointLabels.fontStyle, globalDefaults.defaultFontStyle);
-						var pointLabeFontFamily = helpers.getValueOrDefault(this.options.pointLabels.fontFamily, globalDefaults.defaultFontFamily);
-						var pointLabeFont = helpers.fontString(pointLabelFontSize, pointLabeFontStyle, pointLabeFontFamily);
+  setDimensions() {
+    // Set the unconstrained dimension before label rotation
+    const padding = this._padding = toPadding(getTickBackdropHeight(this.options) / 2);
+    const w = this.width = this.maxWidth - padding.width;
+    const h = this.height = this.maxHeight - padding.height;
+    this.xCenter = Math.floor(this.left + w / 2 + padding.left);
+    this.yCenter = Math.floor(this.top + h / 2 + padding.top);
+    this.drawingArea = Math.floor(Math.min(w, h) / 2);
+  }
 
-						ctx.font = pointLabeFont;
-						ctx.fillStyle = pointLabelFontColor;
+  determineDataLimits() {
+    const {min, max} = this.getMinMax(false);
 
-						var labelsCount = this.pointLabels.length,
-							halfLabelsCount = this.pointLabels.length / 2,
-							quarterLabelsCount = halfLabelsCount / 2,
-							upperHalf = (i < quarterLabelsCount || i > labelsCount - quarterLabelsCount),
-							exactQuarter = (i === quarterLabelsCount || i === labelsCount - quarterLabelsCount);
-						if (i === 0) {
-							ctx.textAlign = 'center';
-						} else if (i === halfLabelsCount) {
-							ctx.textAlign = 'center';
-						} else if (i < halfLabelsCount) {
-							ctx.textAlign = 'left';
-						} else {
-							ctx.textAlign = 'right';
-						}
+    this.min = isFinite(min) && !isNaN(min) ? min : 0;
+    this.max = isFinite(max) && !isNaN(max) ? max : 0;
 
-						// Set the correct text baseline based on outer positioning
-						if (exactQuarter) {
-							ctx.textBaseline = 'middle';
-						} else if (upperHalf) {
-							ctx.textBaseline = 'bottom';
-						} else {
-							ctx.textBaseline = 'top';
-						}
+    // Common base implementation to handle min, max, beginAtZero
+    this.handleTickRangeOptions();
+  }
 
-						ctx.fillText(this.pointLabels[i] ? this.pointLabels[i] : '', pointLabelPosition.x, pointLabelPosition.y);
-					}
-				}
-			}
-		}
-	});
-	Chart.scaleService.registerScaleType("radialLinear", LinearRadialScale, defaultConfig);
+  /**
+	 * Returns the maximum number of ticks based on the scale dimension
+	 * @protected
+	 */
+  computeTickLimit() {
+    return Math.ceil(this.drawingArea / getTickBackdropHeight(this.options));
+  }
 
-};
+  generateTickLabels(ticks) {
+    LinearScaleBase.prototype.generateTickLabels.call(this, ticks);
+
+    // Point labels
+    this._pointLabels = this.getLabels()
+      .map((value, index) => {
+        const label = callCallback(this.options.pointLabels.callback, [value, index], this);
+        return label || label === 0 ? label : '';
+      })
+      .filter((v, i) => this.chart.getDataVisibility(i));
+  }
+
+  fit() {
+    const opts = this.options;
+
+    if (opts.display && opts.pointLabels.display) {
+      fitWithPointLabels(this);
+    } else {
+      this.setCenterPoint(0, 0, 0, 0);
+    }
+  }
+
+  setCenterPoint(leftMovement, rightMovement, topMovement, bottomMovement) {
+    this.xCenter += Math.floor((leftMovement - rightMovement) / 2);
+    this.yCenter += Math.floor((topMovement - bottomMovement) / 2);
+    this.drawingArea -= Math.min(this.drawingArea / 2, Math.max(leftMovement, rightMovement, topMovement, bottomMovement));
+  }
+
+  getIndexAngle(index) {
+    const angleMultiplier = TAU / (this._pointLabels.length || 1);
+    const startAngle = this.options.startAngle || 0;
+
+    return _normalizeAngle(index * angleMultiplier + toRadians(startAngle));
+  }
+
+  getDistanceFromCenterForValue(value) {
+    if (isNullOrUndef(value)) {
+      return NaN;
+    }
+
+    // Take into account half font size + the yPadding of the top value
+    const scalingFactor = this.drawingArea / (this.max - this.min);
+    if (this.options.reverse) {
+      return (this.max - value) * scalingFactor;
+    }
+    return (value - this.min) * scalingFactor;
+  }
+
+  getValueForDistanceFromCenter(distance) {
+    if (isNullOrUndef(distance)) {
+      return NaN;
+    }
+
+    const scaledDistance = distance / (this.drawingArea / (this.max - this.min));
+    return this.options.reverse ? this.max - scaledDistance : this.min + scaledDistance;
+  }
+
+  getPointLabelContext(index) {
+    const pointLabels = this._pointLabels || [];
+
+    if (index >= 0 && index < pointLabels.length) {
+      const pointLabel = pointLabels[index];
+      return createPointLabelContext(this.getContext(), index, pointLabel);
+    }
+  }
+
+  getPointPosition(index, distanceFromCenter, additionalAngle = 0) {
+    const angle = this.getIndexAngle(index) - HALF_PI + additionalAngle;
+    return {
+      x: Math.cos(angle) * distanceFromCenter + this.xCenter,
+      y: Math.sin(angle) * distanceFromCenter + this.yCenter,
+      angle
+    };
+  }
+
+  getPointPositionForValue(index, value) {
+    return this.getPointPosition(index, this.getDistanceFromCenterForValue(value));
+  }
+
+  getBasePosition(index) {
+    return this.getPointPositionForValue(index || 0, this.getBaseValue());
+  }
+
+  getPointLabelPosition(index) {
+    const {left, top, right, bottom} = this._pointLabelItems[index];
+    return {
+      left,
+      top,
+      right,
+      bottom,
+    };
+  }
+
+  /**
+	 * @protected
+	 */
+  drawBackground() {
+    const {backgroundColor, grid: {circular}} = this.options;
+    if (backgroundColor) {
+      const ctx = this.ctx;
+      ctx.save();
+      ctx.beginPath();
+      pathRadiusLine(this, this.getDistanceFromCenterForValue(this._endValue), circular, this._pointLabels.length);
+      ctx.closePath();
+      ctx.fillStyle = backgroundColor;
+      ctx.fill();
+      ctx.restore();
+    }
+  }
+
+  /**
+	 * @protected
+	 */
+  drawGrid() {
+    const ctx = this.ctx;
+    const opts = this.options;
+    const {angleLines, grid, border} = opts;
+    const labelCount = this._pointLabels.length;
+
+    let i, offset, position;
+
+    if (opts.pointLabels.display) {
+      drawPointLabels(this, labelCount);
+    }
+
+    if (grid.display) {
+      this.ticks.forEach((tick, index) => {
+        if (index !== 0) {
+          offset = this.getDistanceFromCenterForValue(tick.value);
+          const context = this.getContext(index);
+          const optsAtIndex = grid.setContext(context);
+          const optsAtIndexBorder = border.setContext(context);
+
+          drawRadiusLine(this, optsAtIndex, offset, labelCount, optsAtIndexBorder);
+        }
+      });
+    }
+
+    if (angleLines.display) {
+      ctx.save();
+
+      for (i = labelCount - 1; i >= 0; i--) {
+        const optsAtIndex = angleLines.setContext(this.getPointLabelContext(i));
+        const {color, lineWidth} = optsAtIndex;
+
+        if (!lineWidth || !color) {
+          continue;
+        }
+
+        ctx.lineWidth = lineWidth;
+        ctx.strokeStyle = color;
+
+        ctx.setLineDash(optsAtIndex.borderDash);
+        ctx.lineDashOffset = optsAtIndex.borderDashOffset;
+
+        offset = this.getDistanceFromCenterForValue(opts.ticks.reverse ? this.min : this.max);
+        position = this.getPointPosition(i, offset);
+        ctx.beginPath();
+        ctx.moveTo(this.xCenter, this.yCenter);
+        ctx.lineTo(position.x, position.y);
+        ctx.stroke();
+      }
+
+      ctx.restore();
+    }
+  }
+
+  /**
+	 * @protected
+	 */
+  drawBorder() {}
+
+  /**
+	 * @protected
+	 */
+  drawLabels() {
+    const ctx = this.ctx;
+    const opts = this.options;
+    const tickOpts = opts.ticks;
+
+    if (!tickOpts.display) {
+      return;
+    }
+
+    const startAngle = this.getIndexAngle(0);
+    let offset, width;
+
+    ctx.save();
+    ctx.translate(this.xCenter, this.yCenter);
+    ctx.rotate(startAngle);
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+
+    this.ticks.forEach((tick, index) => {
+      if (index === 0 && !opts.reverse) {
+        return;
+      }
+
+      const optsAtIndex = tickOpts.setContext(this.getContext(index));
+      const tickFont = toFont(optsAtIndex.font);
+      offset = this.getDistanceFromCenterForValue(this.ticks[index].value);
+
+      if (optsAtIndex.showLabelBackdrop) {
+        ctx.font = tickFont.string;
+        width = ctx.measureText(tick.label).width;
+        ctx.fillStyle = optsAtIndex.backdropColor;
+
+        const padding = toPadding(optsAtIndex.backdropPadding);
+        ctx.fillRect(
+          -width / 2 - padding.left,
+          -offset - tickFont.size / 2 - padding.top,
+          width + padding.width,
+          tickFont.size + padding.height
+        );
+      }
+
+      renderText(ctx, tick.label, 0, -offset, tickFont, {
+        color: optsAtIndex.color,
+      });
+    });
+
+    ctx.restore();
+  }
+
+  /**
+	 * @protected
+	 */
+  drawTitle() {}
+}
