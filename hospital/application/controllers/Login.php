@@ -13,7 +13,35 @@ class Login extends CI_Controller
 		$this->headerData['sidebar'] = false;
 		$this->headerData['body_class'] = 'login';
 	}
+
 	public function index(){
+		$captcha_response = trim($this->input->post('g-recaptcha-response'));
+
+		if($captcha_response != '')
+		{
+			$keySecret = '6LfMUa8lAAAAACVv_vGyGKB-5gflKjTMBT1pMj7b';
+			
+			$check = array(
+				'secret'		=>	$keySecret,
+				'response'		=>	$this->input->post('g-recaptcha-response')
+			);
+
+			$startProcess = curl_init();
+
+			curl_setopt($startProcess, CURLOPT_URL, "https://www.google.com/recaptcha/api/siteverify");
+
+			curl_setopt($startProcess, CURLOPT_POST, true);
+
+			curl_setopt($startProcess, CURLOPT_POSTFIELDS, http_build_query($check));
+
+			curl_setopt($startProcess, CURLOPT_SSL_VERIFYPEER, false);
+
+			curl_setopt($startProcess, CURLOPT_RETURNTRANSFER, true);
+
+			$receiveData = curl_exec($startProcess);
+
+			$finalResponse = json_decode($receiveData, true);
+		
 		$this->load->library(array('form_validation'));
 		$validations = array(
 				array(
@@ -35,6 +63,7 @@ class Login extends CI_Controller
 															'password'=> md5($this->input->post('u_pass')),
 														));
 			if($findUser){
+
 				$login_userObj = $this->User_model->get(array(
 															'user_name'=> $this->input->post('u_name'),
 															'password'=> md5($this->input->post('u_pass')),
@@ -53,11 +82,19 @@ class Login extends CI_Controller
 					redirect('department');
 				}
 			}else{
-				$this->headerData['message'] = "User name Or Password Not Matches.";
+				$this->headerData['message'] = "User name Or Password Not Matches .";
 			}
 		}
+		
+	}
+		else{
+				$this->headerData['message'] = "Captcha Verification Failed .";
+			}
+	
 		$this->load->view('header',$this->headerData);
 		$this->load->view('login');
 		$this->load->view('footer');
 	}
 }
+
+?>

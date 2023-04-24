@@ -176,6 +176,15 @@ class Page extends CI_Controller {
 		$this->load->view('page/take_appoinment',$this->body_Data);
 		$this->load->view('footer_front');
 	}
+	public function is_password_strong($password)
+		{
+			if (preg_match('#[0-9]#', $password) && preg_match('#[a-zA-Z]#', $password) && preg_match('/[^a-zA-Z\d]/', $password)) {
+			return TRUE;
+		}
+		$this->form_validation->set_message('is_password_strong', 'Password must contain letters(a-zA-Z), numbers and special characters');
+		return FALSE;
+		
+		}
 	public function Register()
 	{
 		$this->body_Data['title'] = 'Register Patients';
@@ -242,7 +251,7 @@ class Page extends CI_Controller {
 		$validation[] = array(
 						"label" => "Password",
 						"field" => "password",
-						"rules" => "required|trim"
+						"rules" => "required|trim|min_length[6]|max_length[25]|callback_is_password_strong"
 					);
 		$this->form_validation->set_rules($validation);
 

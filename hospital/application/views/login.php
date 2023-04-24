@@ -48,6 +48,48 @@
 <!--                 <a class="reset_pass" href="#">Lost your password?</a>
                -->              </div>
 
+   
+            
+           
+        <br />
+<script src="https://ajax.googleapis.com/ajax/libs/jquery/2.2.0/jquery.min.js"></script>
+   
+    <script src='https://www.google.com/recaptcha/api.js'></script>
+        <br />
+        
+                <?php
+                if($this->session->flashdata('message'))
+                {
+                ?>
+                    <div class="alert alert-danger">
+                        <?php
+                        echo $this->session->flashdata('message');
+                        ?>
+                    </div>
+                <?php
+                }
+
+                if($this->session->flashdata('success_message'))
+                {
+                ?>
+                    <div class="alert alert-success">
+                        <?php
+                        echo $this->session->flashdata('success_message');
+                        ?>
+                    </div>
+                <?php
+                }
+                ?>
+                <form method="post" action="<?php echo base_url(); ?>captcha/validate">
+                    <div class="form-group">
+                        <div class="g-recaptcha" data-sitekey="6LfMUa8lAAAAACcYTf4XiVuNGH2YCaqlpq1K4aVi"></div>
+                    </div>
+                    
+                </form>
+             
+    
+         
+
               <div class="clearfix"></div>
 
             <?php
