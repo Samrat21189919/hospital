@@ -176,12 +176,30 @@ class Page extends CI_Controller {
 		$this->load->view('page/take_appoinment',$this->body_Data);
 		$this->load->view('footer_front');
 	}
-	public function is_password_strong($password)
+	public function is_password_strong($password) 
 		{
 			if (preg_match('#[0-9]#', $password) && preg_match('#[a-zA-Z]#', $password) && preg_match('/[^a-zA-Z\d]/', $password)) {
 			return TRUE;
 		}
 		$this->form_validation->set_message('is_password_strong', 'Password must contain letters(a-zA-Z), numbers and special characters');
+		return FALSE;
+		
+		}
+	public function is_valid_user_name($user_name)
+		{
+			if (preg_match('#[a-zA-Z]#', $user_name) && preg_match('#[0-9]#', $user_name)) {
+			return TRUE;
+		}
+		$this->form_validation->set_message('is_valid_user_name', 'Enter valid user name');
+		return FALSE;
+		
+		}
+	public function is_valid_full_name($full_name)
+		{
+		if (preg_match('#[a-zA-Z]#', $full_name) && preg_match('/ /', $full_name) && !preg_match('#[0-9]#', $full_name) && !preg_match('#[@$%<>^&*,.\}\{\[\]\(\)+=?]#', $full_name)) {
+			return TRUE;
+		}
+		$this->form_validation->set_message('is_valid_full_name', 'Enter valid full name');
 		return FALSE;
 		
 		}
@@ -236,7 +254,7 @@ class Page extends CI_Controller {
 		$validation[] = array(
 						"label" => "Full Name",
 						"field" => "full_name",
-						"rules" => "required"
+						"rules" => "required|callback_is_valid_full_name"
 					);
 		$validation[] = array(
 						"label" => "Email",
@@ -246,7 +264,7 @@ class Page extends CI_Controller {
 		$validation[] = array(
 						"label" => "User Name",
 						"field" => "user_name",
-						"rules" => "trim|required|is_unique[user.user_name]"
+						"rules" => "trim|required|is_unique[user.user_name]|callback_is_valid_user_name"
 					);
 		$validation[] = array(
 						"label" => "Password",

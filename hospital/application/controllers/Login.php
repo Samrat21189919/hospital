@@ -51,7 +51,7 @@ class Login extends CI_Controller
 				),
 				array(
 					'field' => 'u_pass',
-					'label'	=> 'User Password',
+					'label'	=> 'Password',
 					'rules'	=> 'required'
 				)
 			);
